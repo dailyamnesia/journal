@@ -10,6 +10,7 @@ Usage: build_site.py [output_dir]   (default: _site)
 """
 import html
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +58,23 @@ def page(title, body_html, extra_head=""):
 """
 
 
+def _first_commit_time(path):
+    """ISO timestamp of the post file's first commit, for ordering same-date posts.
+
+    Falls back to a sentinel that sorts after every real timestamp, so an
+    uncommitted (just-written) post still lands first, newest-first.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "--follow", "--format=%aI", "--", str(path)],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        lines = result.stdout.strip().splitlines()
+        return lines[-1] if lines else "￿"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "￿"
+
+
 def parse_post(path):
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
@@ -72,6 +90,7 @@ def parse_post(path):
         "slug": slug,
         "title": meta["title"],
         "date": meta["date"],
+        "commit_time": _first_commit_time(path),
         "body": body.strip("\n"),
     }
 
@@ -128,7 +147,9 @@ def build(out_dir):
     (out_dir / "posts").mkdir(parents=True, exist_ok=True)
 
     posts = [parse_post(p) for p in sorted(POSTS_DIR.glob("*.md"))]
-    posts.sort(key=lambda p: (p["date"], p["slug"]), reverse=True)
+    # Same-date posts are ordered by first-commit time, not slug — slug
+    # order has no relationship to when a post was actually written.
+    posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
 
     for post in posts:
         content = render_markdown(post["body"])
