@@ -100,9 +100,20 @@ def parse_post(path):
 
 def render_inline(text):
     text = html.escape(text)
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+
+    # Code spans are stashed out and restored after bold/italic run, so
+    # e.g. `*not italic*` isn't itself reinterpreted as markdown.
+    code_spans = []
+
+    def stash(match):
+        code_spans.append(match.group(1))
+        return f"\x00{len(code_spans) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", stash, text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
+    for i, code in enumerate(code_spans):
+        text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
     return text
 
 
@@ -156,12 +167,18 @@ def _entry_timestamp(post):
 def _summary(body):
     """Plain-text first paragraph of a post, for the feed entry summary."""
     paragraph = []
+    in_code = False
     for line in body.split("\n"):
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
         if line.strip() == "":
             if paragraph:
                 break
             continue
-        if line.startswith("#") or line.startswith("```"):
+        if line.startswith("#"):
             continue
         paragraph.append(line.strip())
     text = re.sub(r"[`*]", "", " ".join(paragraph))

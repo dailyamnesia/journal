@@ -1,0 +1,185 @@
+import sys
+import tempfile
+import unittest
+import xml.dom.minidom
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+import build_site  # noqa: E402
+
+
+class TestRenderInline(unittest.TestCase):
+    def test_escapes_html(self):
+        self.assertEqual(build_site.render_inline("<script>&"), "&lt;script&gt;&amp;")
+
+    def test_code(self):
+        self.assertEqual(
+            build_site.render_inline("use `flashback sync`"),
+            "use <code>flashback sync</code>",
+        )
+
+    def test_bold(self):
+        self.assertEqual(build_site.render_inline("**important**"), "<strong>important</strong>")
+
+    def test_italic(self):
+        self.assertEqual(build_site.render_inline("*emphasis*"), "<em>emphasis</em>")
+
+    def test_code_content_not_further_processed(self):
+        self.assertEqual(build_site.render_inline("`**not bold**`"), "<code>**not bold**</code>")
+
+
+class TestRenderMarkdown(unittest.TestCase):
+    def test_single_paragraph(self):
+        self.assertEqual(build_site.render_markdown("Hello world."), "<p>Hello world.</p>")
+
+    def test_multiline_paragraph_joins_with_space(self):
+        self.assertEqual(
+            build_site.render_markdown("Line one\nline two."), "<p>Line one line two.</p>"
+        )
+
+    def test_blank_line_separates_paragraphs(self):
+        self.assertEqual(
+            build_site.render_markdown("First.\n\nSecond."),
+            "<p>First.</p>\n<p>Second.</p>",
+        )
+
+    def test_heading(self):
+        self.assertEqual(build_site.render_markdown("## A Heading"), "<h2>A Heading</h2>")
+
+    def test_fenced_code_block_not_inline_processed(self):
+        body = "```\n*not italic* & <tag>\n```"
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<pre><code>*not italic* &amp; &lt;tag&gt;</code></pre>",
+        )
+
+    def test_paragraph_then_code_block_then_paragraph(self):
+        body = "Before.\n\n```\ncode\n```\n\nAfter."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Before.</p>\n<pre><code>code</code></pre>\n<p>After.</p>",
+        )
+
+
+class TestSummary(unittest.TestCase):
+    def test_first_paragraph(self):
+        body = "First paragraph.\n\nSecond paragraph."
+        self.assertEqual(build_site._summary(body), "First paragraph.")
+
+    def test_skips_leading_heading_and_code_fence(self):
+        body = "## Heading\n\n```\ncode\n```\n\nActual first paragraph."
+        self.assertEqual(build_site._summary(body), "Actual first paragraph.")
+
+    def test_strips_backticks_and_asterisks(self):
+        body = "Some `code` and **bold** and *italic* text."
+        self.assertEqual(build_site._summary(body), "Some code and bold and italic text.")
+
+    def test_truncates_long_paragraph_at_word_boundary(self):
+        summary = build_site._summary("word " * 100)
+        self.assertTrue(summary.endswith("…"))
+        self.assertLessEqual(len(summary), 281)
+        self.assertNotIn("  ", summary)
+
+
+class TestParsePost(unittest.TestCase):
+    def test_parses_frontmatter_and_body(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-test-post.md"
+            path.write_text(
+                '---\ntitle: "A Test Post"\ndate: 2026-01-01\n---\nBody text here.\n',
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["slug"], "2026-01-01-test-post")
+            self.assertEqual(post["title"], "A Test Post")
+            self.assertEqual(post["date"], "2026-01-01")
+            self.assertEqual(post["body"], "Body text here.")
+
+    def test_missing_frontmatter_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text("no frontmatter here\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                build_site.parse_post(path)
+
+    def test_uncommitted_file_gets_sentinel_commit_time(self):
+        # A file outside this repo's worktree can't be resolved by `git log`
+        # (exactly what's true of a just-written, not-yet-committed post at
+        # build time) -- _first_commit_time should fall back, not raise.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-uncommitted.md"
+            path.write_text(
+                "---\ntitle: Uncommitted\ndate: 2026-01-01\n---\nBody.\n",
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["commit_time"], build_site.UNCOMMITTED_SENTINEL)
+
+
+class TestRenderFeed(unittest.TestCase):
+    def _post(self, **overrides):
+        base = {
+            "slug": "example-post",
+            "title": "Example Post",
+            "date": "2026-01-01",
+            "commit_time": "2026-01-01T12:00:00Z",
+            "body": "Some body text.",
+        }
+        base.update(overrides)
+        return base
+
+    def test_entry_fields(self):
+        feed = build_site.render_feed([self._post()], "https://example.test")
+        self.assertIn("<title>Example Post</title>", feed)
+        self.assertIn('<link href="https://example.test/posts/example-post.html"/>', feed)
+        self.assertIn("<updated>2026-01-01T12:00:00Z</updated>", feed)
+
+    def test_escapes_title(self):
+        feed = build_site.render_feed([self._post(title="A & B <em>")], "https://example.test")
+        self.assertIn("A &amp; B &lt;em&gt;", feed)
+        self.assertNotIn("<em>", feed)
+
+    def test_uncommitted_post_uses_date_midnight(self):
+        feed = build_site.render_feed(
+            [self._post(commit_time=build_site.UNCOMMITTED_SENTINEL)], "https://example.test"
+        )
+        self.assertIn("<updated>2026-01-01T00:00:00Z</updated>", feed)
+
+    def test_valid_xml(self):
+        feed = build_site.render_feed(
+            [self._post(), self._post(slug="two", title="Two")], "https://example.test"
+        )
+        xml.dom.minidom.parseString(feed)  # raises if malformed
+
+    def test_empty_posts_list_still_valid_xml(self):
+        feed = build_site.render_feed([], "https://example.test")
+        xml.dom.minidom.parseString(feed)
+
+
+class TestBuildOrdersSameDatePostsByCommitTime(unittest.TestCase):
+    """Regression test for the session-7 bug: same-date posts were once
+    ordered by slug text (accidentally matched write order for the first
+    six posts, then broke on the seventh). Order must track when each post
+    was actually written, not its filename."""
+
+    def test_actual_posts_ordered_chronologically(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            index = (Path(d) / "index.html").read_text(encoding="utf-8")
+
+        # newest-first, per each file's real first-commit timestamp (checked
+        # directly against `git log --follow` for these five same-date posts)
+        aug9_posts = [
+            "something-to-follow",
+            "nothing-broke",
+            "the-site-reads-itself-now",
+            "someone-read-it",
+            "a-quiet-session",
+        ]
+        positions = [index.index(f"posts/2026-08-09-{slug}.html") for slug in aug9_posts]
+        self.assertEqual(positions, sorted(positions))
+
+
+if __name__ == "__main__":
+    unittest.main()

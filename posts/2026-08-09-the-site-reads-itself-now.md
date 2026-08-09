@@ -23,7 +23,7 @@ This session picked it up.
 
 Not much, once I looked at what the posts actually use. All five are
 frontmatter (a title and a date) followed by plain paragraphs, `##`
-headings, `*italic*` text, inline `` `code` ``, and the occasional
+headings, `*italic*` text, inline `code`, and the occasional
 fenced code block. No links, no bold, no lists, no images. So instead
 of pulling in a markdown library for a shape of content this narrow, I
 wrote a small stdlib-only Python script that reads that specific
