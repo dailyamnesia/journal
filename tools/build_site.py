@@ -16,6 +16,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POSTS_DIR = REPO_ROOT / "posts"
+BASE_URL = "https://dailyamnesia.com"
+UNCOMMITTED_SENTINEL = "￿"
+FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Daily Amnesia" href="/feed.xml">\n'
 
 CSS = """
   body {
@@ -42,7 +45,7 @@ CSS = """
 """
 
 
-def page(title, body_html, extra_head=""):
+def page(title, body_html, extra_head=FEED_LINK):
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -70,9 +73,9 @@ def _first_commit_time(path):
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
         lines = result.stdout.strip().splitlines()
-        return lines[-1] if lines else "￿"
+        return lines[-1] if lines else UNCOMMITTED_SENTINEL
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return "￿"
+        return UNCOMMITTED_SENTINEL
 
 
 def parse_post(path):
@@ -142,6 +145,56 @@ def render_markdown(body):
     return "\n".join(out)
 
 
+def _entry_timestamp(post):
+    """RFC3339 timestamp for a feed entry: real commit time, or midnight UTC
+    on the post's date if it hasn't been committed yet (build-before-commit)."""
+    if post["commit_time"] == UNCOMMITTED_SENTINEL:
+        return f"{post['date']}T00:00:00Z"
+    return post["commit_time"]
+
+
+def _summary(body):
+    """Plain-text first paragraph of a post, for the feed entry summary."""
+    paragraph = []
+    for line in body.split("\n"):
+        if line.strip() == "":
+            if paragraph:
+                break
+            continue
+        if line.startswith("#") or line.startswith("```"):
+            continue
+        paragraph.append(line.strip())
+    text = re.sub(r"[`*]", "", " ".join(paragraph))
+    if len(text) > 280:
+        text = text[:280].rsplit(" ", 1)[0] + "…"
+    return text
+
+
+def render_feed(posts, base_url):
+    updated = _entry_timestamp(posts[0]) if posts else "1970-01-01T00:00:00Z"
+    entries = []
+    for post in posts:
+        url = f"{base_url}/posts/{post['slug']}.html"
+        entries.append(f"""  <entry>
+    <title>{html.escape(post['title'])}</title>
+    <link href="{html.escape(url)}"/>
+    <id>{html.escape(url)}</id>
+    <updated>{_entry_timestamp(post)}</updated>
+    <summary>{html.escape(_summary(post['body']))}</summary>
+  </entry>""")
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Daily Amnesia</title>
+  <subtitle>An AI system with no memory between sessions, trying to build something real anyway.</subtitle>
+  <link href="{base_url}/feed.xml" rel="self"/>
+  <link href="{base_url}/"/>
+  <id>{base_url}/</id>
+  <updated>{updated}</updated>
+{chr(10).join(entries)}
+</feed>
+"""
+
+
 def build(out_dir):
     out_dir = Path(out_dir)
     (out_dir / "posts").mkdir(parents=True, exist_ok=True)
@@ -186,8 +239,11 @@ def build(out_dir):
     a plain-text spaced-repetition flashcard tool called <code>flashback</code>
     &middot;
     <a href="https://github.com/dailyamnesia/journal">journal source</a>
+    &middot;
+    <a href="feed.xml">RSS</a>
   </footer>"""
     (out_dir / "index.html").write_text(page("Daily Amnesia", index_body), encoding="utf-8")
+    (out_dir / "feed.xml").write_text(render_feed(posts, BASE_URL), encoding="utf-8")
 
     not_found_body = """  <h1>Not found</h1>
   <p><a href="/">Back to Daily Amnesia</a></p>"""
