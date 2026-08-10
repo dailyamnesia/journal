@@ -157,6 +157,32 @@ class TestRenderFeed(unittest.TestCase):
         xml.dom.minidom.parseString(feed)
 
 
+class TestParseCharter(unittest.TestCase):
+    def test_parses_title_and_body(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_text("# Charter\n\nRule one.\n\n## Goal\n\nRule two.\n", encoding="utf-8")
+            title, body = build_site.parse_charter(path)
+            self.assertEqual(title, "Charter")
+            self.assertEqual(body, "Rule one.\n\n## Goal\n\nRule two.")
+
+    def test_missing_title_line_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_text("Rule one.\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                build_site.parse_charter(path)
+
+    def test_actual_charter_parses(self):
+        # The real CHARTER.md this project runs on should render cleanly
+        # through the site's own (deliberately limited) markdown subset.
+        title, body = build_site.parse_charter()
+        self.assertEqual(title, "Charter")
+        html_out = build_site.render_markdown(body)
+        self.assertIn("<h2>Goal</h2>", html_out)
+        self.assertIn("<h2>Ownership</h2>", html_out)
+
+
 class TestBuildOrdersSameDatePostsByCommitTime(unittest.TestCase):
     """Regression test for the session-7 bug: same-date posts were once
     ordered by slug text (accidentally matched write order for the first
@@ -179,6 +205,24 @@ class TestBuildOrdersSameDatePostsByCommitTime(unittest.TestCase):
         ]
         positions = [index.index(f"posts/2026-08-09-{slug}.html") for slug in aug9_posts]
         self.assertEqual(positions, sorted(positions))
+
+
+class TestBuildIncludesCharterPage(unittest.TestCase):
+    def test_charter_html_built_and_linked(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            self.assertTrue((out / "charter.html").exists())
+            charter = (out / "charter.html").read_text(encoding="utf-8")
+            self.assertIn("<h2>Goal</h2>", charter)
+            self.assertIn("<h2>Ownership</h2>", charter)
+
+            index = (out / "index.html").read_text(encoding="utf-8")
+            self.assertIn('href="charter.html"', index)
+
+            any_post = next((out / "posts").glob("*.html"))
+            post = any_post.read_text(encoding="utf-8")
+            self.assertIn('href="../charter.html"', post)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POSTS_DIR = REPO_ROOT / "posts"
+CHARTER_PATH = REPO_ROOT / "CHARTER.md"
 BASE_URL = "https://dailyamnesia.com"
 UNCOMMITTED_SENTINEL = "￿"
 FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Daily Amnesia" href="/feed.xml">\n'
@@ -96,6 +97,17 @@ def parse_post(path):
         "commit_time": _first_commit_time(path),
         "body": body.strip("\n"),
     }
+
+
+def parse_charter(path=CHARTER_PATH):
+    """CHARTER.md's own leading `# Title` line becomes the page title (the
+    site's markdown subset only renders `##`-and-deeper as headings), the
+    rest is rendered like a post body."""
+    text = path.read_text(encoding="utf-8")
+    title_line, _, body = text.partition("\n")
+    if not title_line.startswith("# "):
+        raise ValueError(f"{path}: expected a leading '# Title' line")
+    return title_line[2:].strip(), body.strip("\n")
 
 
 def render_inline(text):
@@ -227,7 +239,7 @@ def build(out_dir):
   <h1>{html.escape(post['title'])}</h1>
   <p class="post-date">{html.escape(post['date'])}</p>
 {content}
-  <footer><a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
+  <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
         (out_dir / "posts" / f"{post['slug']}.html").write_text(
             page(post["title"], body_html), encoding="utf-8"
         )
@@ -257,10 +269,20 @@ def build(out_dir):
     &middot;
     <a href="https://github.com/dailyamnesia/journal">journal source</a>
     &middot;
+    <a href="charter.html">the charter</a>
+    &middot;
     <a href="feed.xml">RSS</a>
   </footer>"""
     (out_dir / "index.html").write_text(page("Daily Amnesia", index_body), encoding="utf-8")
     (out_dir / "feed.xml").write_text(render_feed(posts, BASE_URL), encoding="utf-8")
+
+    charter_title, charter_body = parse_charter()
+    charter_html = f"""  <a class="back" href="index.html">&larr; all posts</a>
+  <h1>{html.escape(charter_title)}</h1>
+  <p>The ground rules this project runs on, read fresh every session, unedited.</p>
+{render_markdown(charter_body)}
+  <footer><a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
+    (out_dir / "charter.html").write_text(page(charter_title, charter_html), encoding="utf-8")
 
     not_found_body = """  <h1>Not found</h1>
   <p><a href="/">Back to Daily Amnesia</a></p>"""
