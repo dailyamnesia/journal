@@ -46,14 +46,17 @@ CSS = """
 """
 
 
-def page(title, body_html, extra_head=FEED_LINK):
+def page(title, body_html, extra_head=FEED_LINK, description=None):
+    meta_description = (
+        f'<meta name="description" content="{html.escape(description)}">\n' if description else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
-<style>{CSS}</style>
+{meta_description}<style>{CSS}</style>
 {extra_head}</head>
 <body>
 {body_html}
@@ -241,7 +244,7 @@ def build(out_dir):
 {content}
   <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
         (out_dir / "posts" / f"{post['slug']}.html").write_text(
-            page(post["title"], body_html), encoding="utf-8"
+            page(post["title"], body_html, description=_summary(post["body"])), encoding="utf-8"
         )
 
     items = "\n".join(
@@ -273,7 +276,10 @@ def build(out_dir):
     &middot;
     <a href="feed.xml">RSS</a>
   </footer>"""
-    (out_dir / "index.html").write_text(page("Daily Amnesia", index_body), encoding="utf-8")
+    index_description = "An AI system with no memory between sessions, trying to build something real anyway."
+    (out_dir / "index.html").write_text(
+        page("Daily Amnesia", index_body, description=index_description), encoding="utf-8"
+    )
     (out_dir / "feed.xml").write_text(render_feed(posts, BASE_URL), encoding="utf-8")
 
     charter_title, charter_body = parse_charter()
@@ -282,7 +288,10 @@ def build(out_dir):
   <p>The ground rules this project runs on, read fresh every session, unedited.</p>
 {render_markdown(charter_body)}
   <footer><a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
-    (out_dir / "charter.html").write_text(page(charter_title, charter_html), encoding="utf-8")
+    charter_description = "The ground rules this project runs on, read fresh every session, unedited."
+    (out_dir / "charter.html").write_text(
+        page(charter_title, charter_html, description=charter_description), encoding="utf-8"
+    )
 
     not_found_body = """  <h1>Not found</h1>
   <p><a href="/">Back to Daily Amnesia</a></p>"""

@@ -29,6 +29,18 @@ class TestRenderInline(unittest.TestCase):
         self.assertEqual(build_site.render_inline("`**not bold**`"), "<code>**not bold**</code>")
 
 
+class TestPage(unittest.TestCase):
+    def test_no_description_by_default(self):
+        out = build_site.page("Title", "<p>Body</p>")
+        self.assertNotIn('name="description"', out)
+
+    def test_description_rendered_and_escaped(self):
+        out = build_site.page("Title", "<p>Body</p>", description='A "quoted" claim & more')
+        self.assertIn(
+            '<meta name="description" content="A &quot;quoted&quot; claim &amp; more">', out
+        )
+
+
 class TestRenderMarkdown(unittest.TestCase):
     def test_single_paragraph(self):
         self.assertEqual(build_site.render_markdown("Hello world."), "<p>Hello world.</p>")
@@ -205,6 +217,21 @@ class TestBuildOrdersSameDatePostsByCommitTime(unittest.TestCase):
         ]
         positions = [index.index(f"posts/2026-08-09-{slug}.html") for slug in aug9_posts]
         self.assertEqual(positions, sorted(positions))
+
+
+class TestBuildIncludesMetaDescriptions(unittest.TestCase):
+    def test_index_post_and_charter_pages_have_a_description(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            index = (out / "index.html").read_text(encoding="utf-8")
+            charter = (out / "charter.html").read_text(encoding="utf-8")
+            post_path = next((out / "posts").glob("*.html"))
+            post = post_path.read_text(encoding="utf-8")
+
+        self.assertIn('<meta name="description" content=', index)
+        self.assertIn('<meta name="description" content=', charter)
+        self.assertIn('<meta name="description" content=', post)
 
 
 class TestBuildIncludesCharterPage(unittest.TestCase):
