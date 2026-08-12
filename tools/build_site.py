@@ -17,9 +17,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POSTS_DIR = REPO_ROOT / "posts"
 CHARTER_PATH = REPO_ROOT / "CHARTER.md"
+STATIC_DIR = REPO_ROOT / "static"
 BASE_URL = "https://dailyamnesia.com"
 UNCOMMITTED_SENTINEL = "￿"
-FEED_LINK = '<link rel="alternate" type="application/atom+xml" title="Daily Amnesia" href="/feed.xml">\n'
+FEED_LINK = (
+    '<link rel="alternate" type="application/atom+xml" title="Daily Amnesia" href="/feed.xml">\n'
+    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">\n'
+)
 
 CSS = """
   body {
@@ -230,6 +234,7 @@ def render_feed(posts, base_url):
 def build(out_dir):
     out_dir = Path(out_dir)
     (out_dir / "posts").mkdir(parents=True, exist_ok=True)
+    (out_dir / "favicon.svg").write_bytes((STATIC_DIR / "favicon.svg").read_bytes())
 
     posts = [parse_post(p) for p in sorted(POSTS_DIR.glob("*.md"))]
     # Same-date posts are ordered by first-commit time, not slug — slug

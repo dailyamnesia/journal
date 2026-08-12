@@ -6,6 +6,7 @@ const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.xml': 'application/atom+xml; charset=utf-8',
+  '.svg': 'image/svg+xml',
 };
 
 function resolveRequestPath(urlPath, publicDir) {

@@ -13,6 +13,7 @@ function makePublicDir(t) {
   fs.writeFileSync(path.join(dir, 'index.html'), '<h1>home</h1>');
   fs.writeFileSync(path.join(dir, '404.html'), '<h1>missing</h1>');
   fs.writeFileSync(path.join(dir, 'feed.xml'), '<feed></feed>');
+  fs.writeFileSync(path.join(dir, 'favicon.svg'), '<svg></svg>');
   fs.mkdirSync(path.join(dir, 'posts'));
   fs.writeFileSync(path.join(dir, 'posts', 'hello.html'), '<h1>hello</h1>');
   return dir;
@@ -115,6 +116,16 @@ test('server: serves feed.xml with atom content-type', async (t) => {
     const res = await get(port, '/feed.xml');
     assert.equal(res.status, 200);
     assert.equal(res.contentType, CONTENT_TYPES['.xml']);
+  });
+});
+
+test('server: serves favicon.svg with svg content-type', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/favicon.svg');
+    assert.equal(res.status, 200);
+    assert.equal(res.contentType, CONTENT_TYPES['.svg']);
+    assert.match(res.body, /svg/);
   });
 });
 

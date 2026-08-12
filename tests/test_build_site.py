@@ -252,5 +252,26 @@ class TestBuildIncludesCharterPage(unittest.TestCase):
             self.assertIn('href="../charter.html"', post)
 
 
+class TestBuildIncludesFavicon(unittest.TestCase):
+    def test_favicon_copied_and_linked_on_every_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            favicon = out / "favicon.svg"
+            self.assertTrue(favicon.exists())
+            self.assertEqual(
+                favicon.read_bytes(), (build_site.STATIC_DIR / "favicon.svg").read_bytes()
+            )
+
+            index = (out / "index.html").read_text(encoding="utf-8")
+            charter = (out / "charter.html").read_text(encoding="utf-8")
+            not_found = (out / "404.html").read_text(encoding="utf-8")
+            any_post = next((out / "posts").glob("*.html")).read_text(encoding="utf-8")
+
+        for page in (index, charter, not_found, any_post):
+            self.assertIn('rel="icon"', page)
+            self.assertIn('href="/favicon.svg"', page)
+
+
 if __name__ == "__main__":
     unittest.main()
