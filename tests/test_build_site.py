@@ -302,6 +302,34 @@ class TestRenderPostNav(unittest.TestCase):
         self.assertEqual(build_site.render_post_nav(None, None), "")
 
 
+class TestRenderStartHere(unittest.TestCase):
+    OLDEST = {"slug": "starting-from-zero", "title": "Starting from zero, on purpose"}
+
+    def test_links_to_oldest_post(self):
+        out = build_site.render_start_here(self.OLDEST)
+        self.assertIn('href="posts/starting-from-zero.html"', out)
+
+    def test_escapes_slug(self):
+        out = build_site.render_start_here({"slug": "a & b", "title": "x"})
+        self.assertIn("a &amp; b", out)
+
+    def test_no_posts_renders_nothing(self):
+        self.assertEqual(build_site.render_start_here(None), "")
+
+
+class TestBuildIndexPointsAtOldestPost(unittest.TestCase):
+    def test_start_here_link_targets_actual_oldest_post(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            index = (Path(d) / "index.html").read_text(encoding="utf-8")
+            posts = [build_site.parse_post(p) for p in build_site.POSTS_DIR.glob("*.md")]
+            posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
+            oldest = posts[-1]
+
+        self.assertIn(f'href="posts/{oldest["slug"]}.html"', index)
+        self.assertIn("start-here", index)
+
+
 class TestBuildLinksAdjacentPosts(unittest.TestCase):
     """Every post page should offer a way onward without a trip through the
     index, and the chain has to run in reading order end to end."""

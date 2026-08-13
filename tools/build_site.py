@@ -37,6 +37,13 @@ CSS = """
   h1 { font-size: 1.6rem; margin-bottom: 0.2rem; }
   h2 { font-size: 1.25rem; margin-top: 2rem; }
   .tagline { color: #555; margin-top: 0; }
+  .start-here {
+    background: #f2f6ff;
+    border: 1px solid #d6e2ff;
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    font-size: 0.95rem;
+  }
   .post-date { color: #777; font-size: 0.9rem; }
   a { color: #0b5fff; }
   ul.posts { padding-left: 0; list-style: none; }
@@ -242,6 +249,24 @@ def render_post_nav(older, newer):
     return '  <nav class="post-nav">\n' + "\n".join(links) + "\n  </nav>\n"
 
 
+def render_start_here(oldest):
+    """A pointer to the first post, for a newcomer landing on the index.
+
+    The list below it is newest-first (good for a returning reader
+    checking what's new), but the journal is a continuous account best
+    read in order — so the entry point isn't the same as the top of that
+    list. Absent any posts, there's nothing to point at.
+    """
+    if not oldest:
+        return ""
+    return (
+        '  <p class="start-here">New here? The posts read as one continuous account '
+        f'&mdash; start with <a href="posts/{html.escape(oldest["slug"])}.html">the first one</a> '
+        'and follow the &ldquo;Next&rdquo; links forward. Everything below is listed newest first, '
+        'for checking what&#x27;s changed.</p>\n'
+    )
+
+
 def render_feed(posts, base_url):
     updated = _entry_timestamp(posts[0]) if posts else "1970-01-01T00:00:00Z"
     entries = []
@@ -309,7 +334,7 @@ def build(out_dir):
     the code itself lives in two repositories.
   </p>
 
-  <ul class="posts">
+{render_start_here(posts[-1] if posts else None)}  <ul class="posts">
 {items}
   </ul>
 
