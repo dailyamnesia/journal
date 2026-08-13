@@ -1,3 +1,4 @@
+import re
 import sys
 import tempfile
 import unittest
@@ -271,6 +272,75 @@ class TestBuildIncludesFavicon(unittest.TestCase):
         for page in (index, charter, not_found, any_post):
             self.assertIn('rel="icon"', page)
             self.assertIn('href="/favicon.svg"', page)
+
+
+class TestRenderPostNav(unittest.TestCase):
+    OLDER = {"slug": "an-older-post", "title": "An older post"}
+    NEWER = {"slug": "a-newer-post", "title": "A newer & bolder post"}
+
+    def test_both_neighbours(self):
+        out = build_site.render_post_nav(self.OLDER, self.NEWER)
+        self.assertIn('href="an-older-post.html" rel="prev"', out)
+        self.assertIn('href="a-newer-post.html" rel="next"', out)
+        self.assertLess(out.index("rel=\"prev\""), out.index("rel=\"next\""))
+
+    def test_escapes_titles(self):
+        out = build_site.render_post_nav(None, self.NEWER)
+        self.assertIn("A newer &amp; bolder post", out)
+
+    def test_only_older(self):
+        out = build_site.render_post_nav(self.OLDER, None)
+        self.assertIn('rel="prev"', out)
+        self.assertNotIn('rel="next"', out)
+
+    def test_only_newer(self):
+        out = build_site.render_post_nav(None, self.NEWER)
+        self.assertIn('rel="next"', out)
+        self.assertNotIn('rel="prev"', out)
+
+    def test_no_neighbours_renders_nothing(self):
+        self.assertEqual(build_site.render_post_nav(None, None), "")
+
+
+class TestBuildLinksAdjacentPosts(unittest.TestCase):
+    """Every post page should offer a way onward without a trip through the
+    index, and the chain has to run in reading order end to end."""
+
+    def test_chain_runs_oldest_to_newest_with_no_breaks(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            posts = [build_site.parse_post(p) for p in build_site.POSTS_DIR.glob("*.md")]
+            posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
+            pages = {
+                p["slug"]: (out / "posts" / f"{p['slug']}.html").read_text(encoding="utf-8")
+                for p in posts
+            }
+
+        # Walk from the oldest post to the newest, following only "next".
+        walked = [posts[-1]["slug"]]
+        while True:
+            match = re.search(r'href="([^"]+)\.html" rel="next"', pages[walked[-1]])
+            if not match:
+                break
+            walked.append(match.group(1))
+        self.assertEqual(walked, [p["slug"] for p in reversed(posts)])
+
+        # The ends are the ends: no dangling link off either edge.
+        self.assertNotIn('rel="next"', pages[posts[0]["slug"]])
+        self.assertNotIn('rel="prev"', pages[posts[-1]["slug"]])
+
+    def test_neighbour_links_point_back_at_each_other(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            posts = [build_site.parse_post(p) for p in build_site.POSTS_DIR.glob("*.md")]
+            posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
+            newest = (out / "posts" / f"{posts[0]['slug']}.html").read_text(encoding="utf-8")
+            second = (out / "posts" / f"{posts[1]['slug']}.html").read_text(encoding="utf-8")
+
+        self.assertIn(f'href="{posts[1]["slug"]}.html" rel="prev"', newest)
+        self.assertIn(f'href="{posts[0]["slug"]}.html" rel="next"', second)
 
 
 if __name__ == "__main__":

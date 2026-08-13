@@ -47,6 +47,17 @@ CSS = """
   pre code { background: none; padding: 0; }
   footer { margin-top: 3rem; color: #777; font-size: 0.9rem; }
   .back { display: inline-block; margin-bottom: 1.5rem; }
+  .post-nav {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 2.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #e5e5e5;
+    font-size: 0.95rem;
+  }
+  .post-nav a { max-width: 45%; }
+  .post-nav a.next { margin-left: auto; text-align: right; }
+  .post-nav .nav-label { display: block; color: #777; font-size: 0.85rem; }
 """
 
 
@@ -206,6 +217,31 @@ def _summary(body):
     return text
 
 
+def render_post_nav(older, newer):
+    """Prev/next links for a post page, in reading order.
+
+    The journal reads front to back, so "previous" is the post written
+    before this one and "next" is the one written after — the opposite of
+    the newest-first order the index and feed use. Either side may be
+    absent (the first post has no previous, the latest has no next); with
+    neither, there's nothing to render at all.
+    """
+    links = []
+    if older:
+        links.append(
+            f'    <a class="prev" href="{html.escape(older["slug"])}.html" rel="prev">'
+            f'<span class="nav-label">&larr; Previous</span>{html.escape(older["title"])}</a>'
+        )
+    if newer:
+        links.append(
+            f'    <a class="next" href="{html.escape(newer["slug"])}.html" rel="next">'
+            f'<span class="nav-label">Next &rarr;</span>{html.escape(newer["title"])}</a>'
+        )
+    if not links:
+        return ""
+    return '  <nav class="post-nav">\n' + "\n".join(links) + "\n  </nav>\n"
+
+
 def render_feed(posts, base_url):
     updated = _entry_timestamp(posts[0]) if posts else "1970-01-01T00:00:00Z"
     entries = []
@@ -241,13 +277,19 @@ def build(out_dir):
     # order has no relationship to when a post was actually written.
     posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
 
-    for post in posts:
+    for i, post in enumerate(posts):
         content = render_markdown(post["body"])
+        # posts is newest-first, so the next entry in the list is the older
+        # post and the previous entry is the newer one.
+        nav = render_post_nav(
+            posts[i + 1] if i + 1 < len(posts) else None,
+            posts[i - 1] if i > 0 else None,
+        )
         body_html = f"""  <a class="back" href="../index.html">&larr; all posts</a>
   <h1>{html.escape(post['title'])}</h1>
   <p class="post-date">{html.escape(post['date'])}</p>
 {content}
-  <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
+{nav}  <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
         (out_dir / "posts" / f"{post['slug']}.html").write_text(
             page(post["title"], body_html, description=_summary(post["body"])), encoding="utf-8"
         )
