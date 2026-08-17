@@ -70,6 +70,11 @@ test('resolveRequestPath: decodes a plain encoded path component', (t) => {
   assert.equal(resolveRequestPath('/a%20b.html', dir), path.join(dir, 'a b.html'));
 });
 
+test('resolveRequestPath: malformed percent-encoding returns null instead of throwing', (t) => {
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('/%E0%A4%A', dir), null);
+});
+
 function withServer(dir, fn) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(createRequestHandler(dir)).listen(0, '127.0.0.1', async () => {
@@ -143,6 +148,18 @@ test('server: traversal attempt gets a 400, not a file', async (t) => {
   await withServer(dir, async (port) => {
     const res = await get(port, '/..%2f..%2f..%2fetc%2fpasswd');
     assert.equal(res.status, 400);
+  });
+});
+
+test('server: malformed percent-encoding gets a 400, not a crash', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/%E0%A4%A');
+    assert.equal(res.status, 400);
+    // The server process itself must survive a bad request — a second,
+    // ordinary request on the same server proves it didn't crash.
+    const followUp = await get(port, '/');
+    assert.equal(followUp.status, 200);
   });
 });
 

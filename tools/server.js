@@ -10,7 +10,18 @@ const CONTENT_TYPES = {
 };
 
 function resolveRequestPath(urlPath, publicDir) {
-  let relative = decodeURIComponent(urlPath.split('?')[0]);
+  let relative;
+  try {
+    relative = decodeURIComponent(urlPath.split('?')[0]);
+  } catch {
+    // decodeURIComponent throws URIError on a malformed escape sequence
+    // (e.g. a truncated "%" or an invalid UTF-8 byte sequence) — with no
+    // try/catch here, that exception was uncaught inside the request
+    // handler, which crashed the whole process on a single bad request
+    // instead of just failing that one request with a 400 like every
+    // other malformed-path case below already does.
+    return null;
+  }
   if (relative === '/') relative = '/index.html';
   const resolved = path.normalize(path.join(publicDir, relative));
   if (resolved !== publicDir && !resolved.startsWith(publicDir + path.sep)) return null;
