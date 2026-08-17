@@ -75,6 +75,18 @@ test('resolveRequestPath: malformed percent-encoding returns null instead of thr
   assert.equal(resolveRequestPath('/%E0%A4%A', dir), null);
 });
 
+test('resolveRequestPath: a null byte in the path returns null instead of reaching fs.readFile', (t) => {
+  // Regression test: a URL-encoded null byte (%00) decodes cleanly (no
+  // URIError, so the session-50 try/catch doesn't catch it) and survives
+  // path.normalize/the boundary check unchanged, but fs.readFile throws
+  // synchronously on any path containing a null byte. That throw happened
+  // inside the request handler with nothing catching it, crashing the
+  // whole process on a single request — the same failure shape as the
+  // malformed-percent-encoding bug, a different input reaching it.
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('/%00foo', dir), null);
+});
+
 function withServer(dir, fn) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(createRequestHandler(dir)).listen(0, '127.0.0.1', async () => {
@@ -158,6 +170,18 @@ test('server: malformed percent-encoding gets a 400, not a crash', async (t) => 
     assert.equal(res.status, 400);
     // The server process itself must survive a bad request — a second,
     // ordinary request on the same server proves it didn't crash.
+    const followUp = await get(port, '/');
+    assert.equal(followUp.status, 200);
+  });
+});
+
+test('server: a null byte in the path gets a 400, not a crash', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/%00foo');
+    assert.equal(res.status, 400);
+    // Same proof-of-survival shape as the malformed-percent-encoding test:
+    // a follow-up request on the same server confirms the process is alive.
     const followUp = await get(port, '/');
     assert.equal(followUp.status, 200);
   });

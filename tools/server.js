@@ -22,6 +22,7 @@ function resolveRequestPath(urlPath, publicDir) {
     // other malformed-path case below already does.
     return null;
   }
+  if (relative.includes('\0')) return null;
   if (relative === '/') relative = '/index.html';
   const resolved = path.normalize(path.join(publicDir, relative));
   if (resolved !== publicDir && !resolved.startsWith(publicDir + path.sep)) return null;
