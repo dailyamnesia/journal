@@ -108,12 +108,17 @@ def parse_post(path):
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         raise ValueError(f"{path}: missing frontmatter")
-    end = text.index("\n---\n", 4)
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        raise ValueError(f"{path}: frontmatter opened with '---' but never closed")
     frontmatter, body = text[4:end], text[end + 5:]
     meta = {}
     for line in frontmatter.splitlines():
         key, _, value = line.partition(":")
         meta[key.strip()] = value.strip().strip('"')
+    for required in ("title", "date"):
+        if required not in meta:
+            raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     slug = path.stem
     return {
         "slug": slug,

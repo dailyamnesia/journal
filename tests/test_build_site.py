@@ -123,6 +123,24 @@ class TestParsePost(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_site.parse_post(path)
 
+    def test_unterminated_frontmatter_names_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text('---\ntitle: "Never closes"\ndate: 2026-01-01\n', encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("never closed", str(ctx.exception))
+
+    def test_missing_required_key_names_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text('---\ndate: 2026-01-01\n---\nBody with no title.\n', encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_uncommitted_file_gets_sentinel_commit_time(self):
         # A file outside this repo's worktree can't be resolved by `git log`
         # (exactly what's true of a just-written, not-yet-committed post at
