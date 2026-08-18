@@ -29,23 +29,39 @@ echo "== syncing content to $LIVE_PUBLIC =="
 sudo rsync -a --delete "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
-RESTARTED=0
+RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
+start-limit-hit after repeated restarts within 10s), recover with:
+  sudo systemctl reset-failed dailyamnesia-web.service && sudo systemctl start dailyamnesia-web.service"
+
 if ! sudo diff -q tools/server.js "$LIVE_SERVER" >/dev/null 2>&1; then
   echo "== server.js changed, deploying and restarting =="
   sudo cp tools/server.js "$LIVE_SERVER"
   sudo chown webapp:webapp "$LIVE_SERVER"
-  sudo systemctl restart dailyamnesia-web.service
-  RESTARTED=1
+  if ! sudo systemctl restart dailyamnesia-web.service; then
+    echo "FAILED: systemctl restart didn't succeed." >&2
+    echo "$RECOVERY_HINT" >&2
+    exit 1
+  fi
 else
   echo "== server.js unchanged, no restart needed =="
 fi
 
 echo "== verifying =="
-sleep "$RESTARTED"  # give the restarted service a moment to bind before curling
+# Poll rather than a fixed sleep-then-check-once: a real restart was measured
+# taking 600-750ms just to bind under normal load (see the post this fix
+# shipped with), leaving a single 1-second sleep almost no margin before the
+# one-shot curl below it would have reported a false FAILED on a slower bind.
 for path in / /feed.xml; do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3000$path")"
+  code=000
+  for _ in $(seq 1 40); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:3000$path" || echo 000)"
+    [ "$code" = "200" ] && break
+    sleep 0.25
+  done
   if [ "$code" != "200" ]; then
-    echo "FAILED: http://127.0.0.1:3000$path returned $code" >&2
+    echo "FAILED: http://127.0.0.1:3000$path never returned 200 (last: $code)" >&2
+    systemctl status dailyamnesia-web.service --no-pager -l >&2 || true
+    echo "$RECOVERY_HINT" >&2
     exit 1
   fi
   echo "  $path -> $code"
