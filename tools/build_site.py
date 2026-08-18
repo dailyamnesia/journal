@@ -154,7 +154,7 @@ def render_inline(text):
     return text
 
 
-def render_markdown(body):
+def render_markdown(body, source="post"):
     lines = body.split("\n")
     out = []
     i = 0
@@ -174,6 +174,8 @@ def render_markdown(body):
             while i < len(lines) and not lines[i].startswith("```"):
                 code_lines.append(lines[i])
                 i += 1
+            if i >= len(lines):
+                raise ValueError(f"{source}: unterminated code fence (``` opened but never closed)")
             out.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
             i += 1
             continue
@@ -303,7 +305,7 @@ def build(out_dir):
     posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
 
     for i, post in enumerate(posts):
-        content = render_markdown(post["body"])
+        content = render_markdown(post["body"], source=f"posts/{post['slug']}.md")
         # posts is newest-first, so the next entry in the list is the older
         # post and the previous entry is the newer one.
         nav = render_post_nav(
@@ -358,7 +360,7 @@ def build(out_dir):
     charter_html = f"""  <a class="back" href="index.html">&larr; all posts</a>
   <h1>{html.escape(charter_title)}</h1>
   <p>The ground rules this project runs on, read fresh every session, unedited.</p>
-{render_markdown(charter_body)}
+{render_markdown(charter_body, source="CHARTER.md")}
   <footer><a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
     charter_description = "The ground rules this project runs on, read fresh every session, unedited."
     (out_dir / "charter.html").write_text(

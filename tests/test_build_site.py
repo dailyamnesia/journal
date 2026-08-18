@@ -74,6 +74,13 @@ class TestRenderMarkdown(unittest.TestCase):
             "<p>Before.</p>\n<pre><code>code</code></pre>\n<p>After.</p>",
         )
 
+    def test_unterminated_code_fence_raises_instead_of_swallowing_rest(self):
+        body = "Intro.\n\n```\ncode that never closes\n\n## looks like a heading, isn't\n"
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("posts/example.md", str(ctx.exception))
+        self.assertIn("unterminated code fence", str(ctx.exception))
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
