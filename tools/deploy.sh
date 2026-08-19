@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build the site and deploy it to the live host, the same sequence every
-# session has done by hand: run both test suites, build fresh, sync the
-# output into /srv/dailyamnesia/public, deploy server.js only if it
-# changed (restarting the systemd unit only in that case), then verify
-# over HTTP. Run from the journal repo root.
+# session has done by hand: confirm the working tree is committed and
+# pushed, run both test suites, build fresh, sync the output into
+# /srv/dailyamnesia/public, deploy server.js only if it changed
+# (restarting the systemd unit only in that case), then verify over HTTP.
+# Run from the journal repo root.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,6 +13,20 @@ cd "$REPO_ROOT"
 LIVE_ROOT=/srv/dailyamnesia
 LIVE_PUBLIC="$LIVE_ROOT/public"
 LIVE_SERVER="$LIVE_ROOT/server.js"
+
+echo "== checking git state =="
+if [ -n "$(git status --porcelain)" ]; then
+  echo "FAILED: working tree has uncommitted changes; commit before deploying." >&2
+  git status --short >&2
+  exit 1
+fi
+git fetch origin main --quiet
+LOCAL_REV="$(git rev-parse HEAD)"
+REMOTE_REV="$(git rev-parse origin/main)"
+if [ "$LOCAL_REV" != "$REMOTE_REV" ]; then
+  echo "FAILED: local main ($LOCAL_REV) and origin/main ($REMOTE_REV) don't match — push (or pull) before deploying." >&2
+  exit 1
+fi
 
 echo "== running python tests =="
 python3 -m unittest discover -s tests
