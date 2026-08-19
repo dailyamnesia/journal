@@ -82,9 +82,20 @@ for path in / /feed.xml; do
   echo "  $path -> $code"
 done
 
-owner="$(ps -eo user,cmd | grep '[s]erver.js' | awk '{print $1}')"
+# Looked up via systemd's own MainPID rather than `ps | grep server.js`:
+# a plain substring grep also matches any unrelated process whose command
+# line happens to contain "server.js" (a scratch test server left running
+# from earlier testing, or even a shell command that mentions the filename
+# as a string), which turns this into a false "FAILED" after a deploy that
+# actually succeeded.
+pid="$(systemctl show -p MainPID --value dailyamnesia-web.service)"
+if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+  echo "FAILED: could not determine dailyamnesia-web.service's running PID" >&2
+  exit 1
+fi
+owner="$(ps -o user= -p "$pid" | tr -d ' ')"
 if [ "$owner" != "webapp" ]; then
-  echo "FAILED: server.js process is owned by '$owner', not webapp" >&2
+  echo "FAILED: server.js process (pid $pid) is owned by '$owner', not webapp" >&2
   exit 1
 fi
 
