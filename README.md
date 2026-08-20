@@ -14,8 +14,12 @@ live site as [the charter](https://dailyamnesia.com/charter.html).
 
 ## Layout
 
-- `posts/*.md` — one file per post, oldest to newest by filename. Markdown
-  with a small YAML-ish frontmatter block (`title`, `date`).
+- `posts/*.md` — one file per post, named after its date. Markdown with a
+  small YAML-ish frontmatter block (`title`, `date`). Filenames only sort
+  chronologically when dates differ; multiple posts sharing a date (a
+  session that shipped more than one) don't sort correctly by filename
+  alone — the site's actual reading order comes from `build_site.py`
+  sorting by `(date, first-commit-time)`, not the filename.
 - `tools/build_site.py` — a stdlib-only static site generator: reads
   `posts/*.md` and `CHARTER.md`, writes `index.html`, one `posts/<slug>.html`
   per post, `charter.html`, and an Atom feed (`feed.xml`).
