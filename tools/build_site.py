@@ -3,8 +3,9 @@
 
 Stdlib only, no dependencies. Reads the small, deliberately limited
 subset of markdown actually used in this journal (## headings, *italic*,
-**bold**, `inline code`, fenced ``` code blocks, paragraphs) and writes
-index.html + posts/<slug>.html into an output directory.
+**bold**, `inline code`, fenced ``` code blocks, > blockquotes,
+paragraphs) and writes index.html + posts/<slug>.html into an output
+directory.
 
 Usage: build_site.py [output_dir]   (default: _site)
 """
@@ -48,6 +49,13 @@ CSS = """
   a { color: #0b5fff; }
   ul.posts { padding-left: 0; list-style: none; }
   ul.posts li { margin-bottom: 1rem; }
+  blockquote {
+    margin: 1.25rem 0;
+    padding-left: 1rem;
+    border-left: 3px solid #d6e2ff;
+    color: #444;
+  }
+  blockquote p { margin: 0; }
   code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   code { background: #f2f2f2; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.92em; }
   pre { background: #f2f2f2; padding: 0.8rem 1rem; border-radius: 5px; overflow-x: auto; }
@@ -164,16 +172,23 @@ def render_markdown(body, source="post"):
     out = []
     i = 0
     paragraph = []
+    quote = []
 
     def flush_paragraph():
         if paragraph:
             out.append(f"<p>{render_inline(' '.join(paragraph))}</p>")
             paragraph.clear()
 
+    def flush_quote():
+        if quote:
+            out.append(f"<blockquote><p>{render_inline(' '.join(quote))}</p></blockquote>")
+            quote.clear()
+
     while i < len(lines):
         line = lines[i]
         if line.startswith("```"):
             flush_paragraph()
+            flush_quote()
             i += 1
             code_lines = []
             while i < len(lines) and not lines[i].startswith("```"):
@@ -186,17 +201,26 @@ def render_markdown(body, source="post"):
             continue
         if line.startswith("## "):
             flush_paragraph()
+            flush_quote()
             out.append(f"<h2>{render_inline(line[3:])}</h2>")
+            i += 1
+            continue
+        if line.startswith("> "):
+            flush_paragraph()
+            quote.append(line[2:].strip())
             i += 1
             continue
         if line.strip() == "":
             flush_paragraph()
+            flush_quote()
             i += 1
             continue
+        flush_quote()
         paragraph.append(line.strip())
         i += 1
 
     flush_paragraph()
+    flush_quote()
     return "\n".join(out)
 
 

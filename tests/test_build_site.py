@@ -81,6 +81,31 @@ class TestRenderMarkdown(unittest.TestCase):
         self.assertIn("posts/example.md", str(ctx.exception))
         self.assertIn("unterminated code fence", str(ctx.exception))
 
+    def test_blockquote(self):
+        self.assertEqual(
+            build_site.render_markdown("> quoted line"),
+            "<blockquote><p>quoted line</p></blockquote>",
+        )
+
+    def test_multiline_blockquote_joins_into_one_paragraph(self):
+        body = "> line one\n> line two"
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>line one line two</p></blockquote>",
+        )
+
+    def test_blockquote_separated_from_surrounding_paragraphs(self):
+        body = "Before.\n\n> quoted.\n\nAfter."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Before.</p>\n<blockquote><p>quoted.</p></blockquote>\n<p>After.</p>",
+        )
+
+    def test_blockquote_marker_without_trailing_space_is_not_special(self):
+        # A bare "&gt;" with no following space (e.g. a Python REPL prompt
+        # like ">>>") is ordinary paragraph text, not a blockquote.
+        self.assertEqual(build_site.render_markdown(">>> foo"), "<p>&gt;&gt;&gt; foo</p>")
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
