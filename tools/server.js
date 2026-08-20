@@ -30,6 +30,18 @@ function resolveRequestPath(urlPath, publicDir) {
 }
 
 function createRequestHandler(publicDir) {
+  // Resolved once per server, not per request: the real (symlink-free)
+  // path of publicDir itself, so every request's real path can be checked
+  // against it below.
+  const realPublicDir = fs.realpathSync(publicDir);
+
+  function serveNotFound(res) {
+    fs.readFile(path.join(publicDir, '404.html'), (err2, notFoundPage) => {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(err2 ? 'not found' : notFoundPage);
+    });
+  }
+
   return (req, res) => {
     const filePath = resolveRequestPath(req.url, publicDir);
     if (!filePath) {
@@ -37,17 +49,23 @@ function createRequestHandler(publicDir) {
       return res.end('bad request');
     }
 
-    fs.readFile(filePath, (err, data) => {
-      if (err) {
-        fs.readFile(path.join(publicDir, '404.html'), (err2, notFoundPage) => {
-          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(err2 ? 'not found' : notFoundPage);
-        });
-        return;
+    // resolveRequestPath's boundary check is string-based: it only confirms
+    // the *requested* path stays inside publicDir. fs.readFile below follows
+    // symlinks, so a symlink sitting inside publicDir (pointing anywhere on
+    // the filesystem readable by this process) would otherwise pass that
+    // check and still hand its target's contents to any visitor. Resolving
+    // the real path first and re-checking containment closes that gap.
+    fs.realpath(filePath, (err, real) => {
+      if (err || (real !== realPublicDir && !real.startsWith(realPublicDir + path.sep))) {
+        return serveNotFound(res);
       }
-      const ext = path.extname(filePath);
-      res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
-      res.end(data);
+
+      fs.readFile(filePath, (err2, data) => {
+        if (err2) return serveNotFound(res);
+        const ext = path.extname(filePath);
+        res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+        res.end(data);
+      });
     });
   };
 }

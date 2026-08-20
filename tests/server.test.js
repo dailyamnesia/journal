@@ -195,3 +195,41 @@ test('server: sibling directory sharing the publicDir prefix is not reachable', 
     assert.equal(res.status, 400);
   });
 });
+
+test('server: a symlink inside publicDir pointing at a file outside it is not served', async (t) => {
+  // Regression test: resolveRequestPath's boundary check is purely
+  // string-based, so it only ever looks at the *requested* path. A symlink
+  // sitting inside publicDir can point anywhere on disk; fs.readFile
+  // follows symlinks by default, so without a real-path check, a symlink
+  // like this would hand an arbitrary file's contents (readable by
+  // whichever user runs the process) to any visitor who requests it,
+  // regardless of where it actually lives.
+  const dir = makePublicDir(t);
+  const secretPath = path.join(os.tmpdir(), `server-test-secret-${process.pid}.txt`);
+  fs.writeFileSync(secretPath, 'should not be reachable via a symlink');
+  t.after(() => fs.rmSync(secretPath, { force: true }));
+  fs.symlinkSync(secretPath, path.join(dir, 'sneaky.html'));
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/sneaky.html');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.body, /should not be reachable/);
+  });
+});
+
+test('server: a symlinked directory inside publicDir does not expose its target tree', async (t) => {
+  // Same gap, one level up: a symlink to a whole directory lets a request
+  // walk into arbitrary subpaths beneath wherever it points, not just one
+  // fixed file.
+  const dir = makePublicDir(t);
+  const secretDir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-secretdir-'));
+  t.after(() => fs.rmSync(secretDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(secretDir, 'inside.txt'), 'should not be reachable via a symlinked dir');
+  fs.symlinkSync(secretDir, path.join(dir, 'sneakydir'));
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/sneakydir/inside.txt');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.body, /should not be reachable/);
+  });
+});
