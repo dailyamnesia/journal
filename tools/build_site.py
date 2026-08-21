@@ -248,6 +248,9 @@ def _summary(body):
             continue
         if line.startswith("#"):
             continue
+        if line.startswith("> "):
+            paragraph.append(line[2:].strip())
+            continue
         paragraph.append(line.strip())
     text = re.sub(r"[`*]", "", " ".join(paragraph))
     if len(text) > 280:

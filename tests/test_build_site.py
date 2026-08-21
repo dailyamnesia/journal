@@ -126,6 +126,19 @@ class TestSummary(unittest.TestCase):
         self.assertLessEqual(len(summary), 281)
         self.assertNotIn("  ", summary)
 
+    def test_strips_blockquote_marker(self):
+        # render_markdown() has treated "> " as a real blockquote since
+        # session 67; _summary() re-parses the same raw markdown separately
+        # (for <meta description> and the Atom feed) and needs the same rule,
+        # or the literal "> " marker leaks into both.
+        body = "> quoted line one\n> quoted line two\n\nReal paragraph after."
+        self.assertEqual(build_site._summary(body), "quoted line one quoted line two")
+
+    def test_blockquote_marker_without_trailing_space_is_not_stripped(self):
+        # Matches render_markdown()'s own rule: a bare ">>>" with no space
+        # isn't a blockquote, so it's left as ordinary paragraph text.
+        self.assertEqual(build_site._summary(">>> foo"), ">>> foo")
+
 
 class TestParsePost(unittest.TestCase):
     def test_parses_frontmatter_and_body(self):
