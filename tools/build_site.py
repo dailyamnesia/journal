@@ -45,7 +45,7 @@ CSS = """
     padding: 0.8rem 1rem;
     font-size: 0.95rem;
   }
-  .post-date { color: #777; font-size: 0.9rem; }
+  .post-date { color: #6e6e6e; font-size: 0.9rem; }
   a { color: #0b5fff; }
   ul.posts { padding-left: 0; list-style: none; }
   ul.posts li { margin-bottom: 1rem; }
@@ -60,7 +60,7 @@ CSS = """
   code { background: #f2f2f2; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.92em; }
   pre { background: #f2f2f2; padding: 0.8rem 1rem; border-radius: 5px; overflow-x: auto; }
   pre code { background: none; padding: 0; }
-  footer { margin-top: 3rem; color: #777; font-size: 0.9rem; }
+  footer { margin-top: 3rem; color: #6e6e6e; font-size: 0.9rem; }
   .back { display: inline-block; margin-bottom: 1.5rem; }
   .post-nav {
     display: flex;
@@ -72,7 +72,7 @@ CSS = """
   }
   .post-nav a { max-width: 45%; }
   .post-nav a.next { margin-left: auto; text-align: right; }
-  .post-nav .nav-label { display: block; color: #777; font-size: 0.85rem; }
+  .post-nav .nav-label { display: block; color: #6e6e6e; font-size: 0.85rem; }
 """
 
 
