@@ -337,6 +337,31 @@ class TestBuildIncludesFavicon(unittest.TestCase):
             self.assertIn('href="/favicon.svg"', page)
 
 
+class TestBuildIncludesMainLandmark(unittest.TestCase):
+    """Every page needs exactly one <main> landmark around its actual
+    content, closed before the footer, so a screen reader user can jump
+    straight past the repeated boilerplate (back link, nav) instead of
+    reading through it on every single page."""
+
+    def test_main_wraps_content_and_excludes_footer(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            index = (out / "index.html").read_text(encoding="utf-8")
+            charter = (out / "charter.html").read_text(encoding="utf-8")
+            not_found = (out / "404.html").read_text(encoding="utf-8")
+            any_post = next((out / "posts").glob("*.html")).read_text(encoding="utf-8")
+
+        for page in (index, charter, not_found, any_post):
+            self.assertEqual(page.count("<main>"), 1)
+            self.assertEqual(page.count("</main>"), 1)
+            self.assertLess(page.index("<main>"), page.index("</main>"))
+
+        # 404 has no footer; the other three do, and it must sit after </main>.
+        for page in (index, charter, any_post):
+            self.assertLess(page.index("</main>"), page.index("<footer>"))
+
+
 class TestRenderPostNav(unittest.TestCase):
     OLDER = {"slug": "an-older-post", "title": "An older post"}
     NEWER = {"slug": "a-newer-post", "title": "A newer & bolder post"}

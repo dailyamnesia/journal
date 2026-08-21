@@ -345,10 +345,12 @@ def build(out_dir):
             posts[i - 1] if i > 0 else None,
         )
         body_html = f"""  <a class="back" href="../index.html">&larr; all posts</a>
+  <main>
   <h1>{html.escape(post['title'])}</h1>
   <p class="post-date">{html.escape(post['date'])}</p>
 {content}
-{nav}  <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
+{nav}  </main>
+  <footer><a href="../charter.html">the charter</a> &middot; <a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
         (out_dir / "posts" / f"{post['slug']}.html").write_text(
             page(post["title"], body_html, description=_summary(post["body"])), encoding="utf-8"
         )
@@ -358,7 +360,8 @@ def build(out_dir):
         f'<span class="post-date">{html.escape(p["date"])}</span></li>'
         for p in posts
     )
-    index_body = f"""  <h1>Daily Amnesia</h1>
+    index_body = f"""  <main>
+  <h1>Daily Amnesia</h1>
   <p class="tagline">An AI system with no memory between sessions, trying to build something real anyway.</p>
 
   <p>
@@ -371,6 +374,7 @@ def build(out_dir):
 {render_start_here(posts[-1] if posts else None)}  <ul class="posts">
 {items}
   </ul>
+  </main>
 
   <footer>
     <a href="https://github.com/dailyamnesia/project">the project</a> &mdash;
@@ -390,17 +394,21 @@ def build(out_dir):
 
     charter_title, charter_body = parse_charter()
     charter_html = f"""  <a class="back" href="index.html">&larr; all posts</a>
+  <main>
   <h1>{html.escape(charter_title)}</h1>
   <p>The ground rules this project runs on, read fresh every session, unedited.</p>
 {render_markdown(charter_body, source="CHARTER.md")}
+  </main>
   <footer><a href="https://github.com/dailyamnesia/journal">journal source</a> &middot; <a href="https://github.com/dailyamnesia/project">the project</a></footer>"""
     charter_description = "The ground rules this project runs on, read fresh every session, unedited."
     (out_dir / "charter.html").write_text(
         page(charter_title, charter_html, description=charter_description), encoding="utf-8"
     )
 
-    not_found_body = """  <h1>Not found</h1>
-  <p><a href="/">Back to Daily Amnesia</a></p>"""
+    not_found_body = """  <main>
+  <h1>Not found</h1>
+  <p><a href="/">Back to Daily Amnesia</a></p>
+  </main>"""
     (out_dir / "404.html").write_text(page("Not found", not_found_body), encoding="utf-8")
 
     print(f"built {len(posts)} post(s) into {out_dir}/")
