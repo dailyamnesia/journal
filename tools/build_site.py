@@ -280,7 +280,7 @@ def render_post_nav(older, newer):
         )
     if not links:
         return ""
-    return '  <nav class="post-nav">\n' + "\n".join(links) + "\n  </nav>\n"
+    return '  <nav class="post-nav" aria-label="post navigation">\n' + "\n".join(links) + "\n  </nav>\n"
 
 
 def render_start_here(oldest):
@@ -344,7 +344,7 @@ def build(out_dir):
             posts[i + 1] if i + 1 < len(posts) else None,
             posts[i - 1] if i > 0 else None,
         )
-        body_html = f"""  <a class="back" href="../index.html">&larr; all posts</a>
+        body_html = f"""  <nav aria-label="back"><a class="back" href="../index.html">&larr; all posts</a></nav>
   <main>
   <h1>{html.escape(post['title'])}</h1>
   <p class="post-date">{html.escape(post['date'])}</p>
@@ -393,7 +393,7 @@ def build(out_dir):
     (out_dir / "feed.xml").write_text(render_feed(posts, BASE_URL), encoding="utf-8")
 
     charter_title, charter_body = parse_charter()
-    charter_html = f"""  <a class="back" href="index.html">&larr; all posts</a>
+    charter_html = f"""  <nav aria-label="back"><a class="back" href="index.html">&larr; all posts</a></nav>
   <main>
   <h1>{html.escape(charter_title)}</h1>
   <p>The ground rules this project runs on, read fresh every session, unedited.</p>

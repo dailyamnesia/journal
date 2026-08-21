@@ -362,6 +362,49 @@ class TestBuildIncludesMainLandmark(unittest.TestCase):
             self.assertLess(page.index("</main>"), page.index("<footer>"))
 
 
+class TestBackLinkIsInALandmark(unittest.TestCase):
+    """Post and charter pages print a '<- all posts' link before <main>,
+    which is deliberately excluded from the main landmark (it's boilerplate
+    navigation, not the page's content). But content outside every landmark
+    is itself an accessibility gap (axe-core's 'region' rule flags it) --
+    the link needs a landmark of its own, not just exclusion from this one."""
+
+    def test_back_link_sits_inside_a_nav(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            charter = (out / "charter.html").read_text(encoding="utf-8")
+            any_post = next((out / "posts").glob("*.html")).read_text(encoding="utf-8")
+
+        for page in (charter, any_post):
+            self.assertIn('<nav aria-label="back"><a class="back"', page)
+            nav_open = page.index("<nav")
+            nav_close = page.index("</nav>")
+            back_link = page.index('<a class="back"')
+            main_open = page.index("<main>")
+            self.assertLess(nav_open, back_link)
+            self.assertLess(back_link, nav_close)
+            self.assertLess(nav_close, main_open)
+
+
+class TestNavLandmarksAreDistinguishable(unittest.TestCase):
+    """A post page has two <nav> elements -- the back-to-index link above
+    <main>, and the prev/next post-nav below it. axe-core's
+    'landmark-unique' rule flags two landmarks of the same type with no
+    distinguishing accessible name, since a screen reader's landmark list
+    would show two identical, unlabelled 'navigation' entries. Each nav
+    needs its own aria-label."""
+
+    def test_post_page_has_two_distinctly_labelled_navs(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            out = Path(d)
+            any_post = next((out / "posts").glob("*.html")).read_text(encoding="utf-8")
+
+        self.assertIn('<nav aria-label="back">', any_post)
+        self.assertIn('<nav class="post-nav" aria-label="post navigation">', any_post)
+
+
 class TestRenderPostNav(unittest.TestCase):
     OLDER = {"slug": "an-older-post", "title": "An older post"}
     NEWER = {"slug": "a-newer-post", "title": "A newer & bolder post"}
