@@ -1,3 +1,5 @@
+import contextlib
+import io
 import re
 import sys
 import tempfile
@@ -539,6 +541,44 @@ class TestBuildLinksAdjacentPosts(unittest.TestCase):
 
         self.assertIn(f'href="{posts[1]["slug"]}.html" rel="prev"', newest)
         self.assertIn(f'href="{posts[0]["slug"]}.html" rel="next"', second)
+
+
+class TestResolveOutputDir(unittest.TestCase):
+    def test_no_argument_defaults_to_site_dir(self):
+        self.assertEqual(
+            build_site._resolve_output_dir(["build_site.py"]), REPO_ROOT / "_site"
+        )
+
+    def test_positional_argument_is_used_as_the_output_dir(self):
+        self.assertEqual(
+            build_site._resolve_output_dir(["build_site.py", "out"]), "out"
+        )
+
+    def test_help_flag_prints_usage_and_exits_zero_instead_of_building(self):
+        # Pre-fix, this raised no SystemExit at all -- it returned the
+        # literal string "--help" as an output directory, and the caller
+        # went on to build the whole site into a real "./--help/" folder.
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stdout(stdout):
+                build_site._resolve_output_dir(["build_site.py", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("Usage:", stdout.getvalue())
+
+    def test_unrecognized_flag_is_rejected_not_treated_as_a_directory_name(self):
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(stderr):
+                build_site._resolve_output_dir(["build_site.py", "--bogus"])
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("--bogus", stderr.getvalue())
+
+    def test_too_many_arguments_is_rejected(self):
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(stderr):
+                build_site._resolve_output_dir(["build_site.py", "a", "b"])
+        self.assertNotEqual(cm.exception.code, 0)
 
 
 if __name__ == "__main__":

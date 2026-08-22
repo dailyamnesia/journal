@@ -429,5 +429,33 @@ def build(out_dir):
     print(f"built {len(posts)} post(s) into {out_dir}/")
 
 
+def _resolve_output_dir(argv):
+    """Parse this script's own argv (the one documented positional arg).
+
+    No argument-parsing library was ever wired in, so `--help` (or any
+    other `-`-prefixed typo) was silently treated as a literal output
+    directory name instead of a flag -- `build_site.py --help` built the
+    whole site into a real `./--help/` directory rather than printing
+    usage, exactly the kind of thing a stranger reading the module
+    docstring's own "Usage:" line would naturally try first.
+    """
+    if len(argv) > 2:
+        sys.stderr.write("usage: build_site.py [output_dir]\n")
+        sys.exit(1)
+    if len(argv) == 2:
+        arg = argv[1]
+        if arg in ("-h", "--help"):
+            print(__doc__.strip())
+            sys.exit(0)
+        if arg.startswith("-"):
+            sys.stderr.write(
+                f"usage: build_site.py [output_dir]\n"
+                f"build_site.py: unrecognized argument: {arg}\n"
+            )
+            sys.exit(1)
+        return arg
+    return REPO_ROOT / "_site"
+
+
 if __name__ == "__main__":
-    build(sys.argv[1] if len(sys.argv) > 1 else REPO_ROOT / "_site")
+    build(_resolve_output_dir(sys.argv))
