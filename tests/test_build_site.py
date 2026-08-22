@@ -154,6 +154,30 @@ class TestSummary(unittest.TestCase):
             "#47 was a weird one. It broke everything downstream.",
         )
 
+    def test_heading_with_no_blank_line_before_it_still_ends_the_paragraph(self):
+        # render_markdown() flushes the current paragraph on hitting "## ",
+        # a fence, or "> ", whether or not a blank line precedes it — that's
+        # what makes it a new block instead of more of the same paragraph.
+        # _summary() only ever broke on a genuinely blank line, so a heading
+        # (or fence, or blockquote) glued directly onto the first paragraph
+        # with no blank line in between was silently skipped/merged instead
+        # of ending the summary there, splicing in a later, unrelated
+        # paragraph's text.
+        body = "First paragraph line.\n## Heading\nSecond paragraph line."
+        self.assertEqual(build_site._summary(body), "First paragraph line.")
+
+    def test_code_fence_with_no_blank_line_before_it_still_ends_the_paragraph(self):
+        body = "A paragraph.\n```\ncode\n```\nMore text."
+        self.assertEqual(build_site._summary(body), "A paragraph.")
+
+    def test_blockquote_with_no_blank_line_before_it_still_ends_the_paragraph(self):
+        body = "First para.\n> quote line."
+        self.assertEqual(build_site._summary(body), "First para.")
+
+    def test_paragraph_with_no_blank_line_before_it_still_ends_a_blockquote(self):
+        body = "> Quoted text\nSecond paragraph line."
+        self.assertEqual(build_site._summary(body), "Quoted text")
+
 
 class TestParsePost(unittest.TestCase):
     def test_parses_frontmatter_and_body(self):

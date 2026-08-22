@@ -235,9 +235,16 @@ def _entry_timestamp(post):
 def _summary(body):
     """Plain-text first paragraph of a post, for the feed entry summary."""
     paragraph = []
+    quoting = False
     in_code = False
     for line in body.split("\n"):
         if line.startswith("```"):
+            # render_markdown() flushes the current paragraph/quote before a
+            # fence starts, same as a blank line does; a fence with nothing
+            # accumulated yet (before the real first paragraph) is skipped,
+            # same as a leading heading is below.
+            if paragraph:
+                break
             in_code = not in_code
             continue
         if in_code:
@@ -247,10 +254,18 @@ def _summary(body):
                 break
             continue
         if line.startswith("## "):
+            if paragraph:
+                break
             continue
         if line.startswith("> "):
+            if paragraph and not quoting:
+                break
+            quoting = True
             paragraph.append(line[2:].strip())
             continue
+        if paragraph and quoting:
+            break
+        quoting = False
         paragraph.append(line.strip())
     text = re.sub(r"[`*]", "", " ".join(paragraph))
     if len(text) > 280:
