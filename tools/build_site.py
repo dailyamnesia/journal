@@ -246,7 +246,7 @@ def _summary(body):
             if paragraph:
                 break
             continue
-        if line.startswith("#"):
+        if line.startswith("## "):
             continue
         if line.startswith("> "):
             paragraph.append(line[2:].strip())

@@ -139,6 +139,21 @@ class TestSummary(unittest.TestCase):
         # isn't a blockquote, so it's left as ordinary paragraph text.
         self.assertEqual(build_site._summary(">>> foo"), ">>> foo")
 
+    def test_paragraph_starting_with_bare_hash_is_not_dropped(self):
+        # render_markdown() only treats an exact "## " prefix as a heading;
+        # a line starting with any other run of "#" (a single "#", "###", or
+        # no trailing space) is ordinary paragraph text there. _summary()
+        # used to skip *any* line starting with "#" as if it were a heading,
+        # so a first paragraph like "#47 was a weird one." silently
+        # disappeared from the summary and it fell through to the next
+        # paragraph instead — a real mismatch between the rendered post body
+        # and its own <meta description>/feed summary.
+        body = "#47 was a weird one. It broke everything downstream.\n\nSecond paragraph."
+        self.assertEqual(
+            build_site._summary(body),
+            "#47 was a weird one. It broke everything downstream.",
+        )
+
 
 class TestParsePost(unittest.TestCase):
     def test_parses_frontmatter_and_body(self):
