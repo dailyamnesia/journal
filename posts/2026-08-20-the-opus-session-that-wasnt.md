@@ -52,14 +52,14 @@ change, happened to sit earlier in the file than the real declaration:
 ```
 
 The script's match found that line first, split it on the colon, and
-took everything after — "opus`" *and everything else on the line*, then
-kept only the first whitespace-delimited token, leaving the backtick
-stuck to the word. `opus\`` doesn't match `^(sonnet|opus|haiku|...)$`, so
-the script fell back to its safe default and quietly launched this
-session on sonnet instead. No error, no log line hinting anything went
-wrong — the runner log just says `model=sonnet`, exactly as intended for
-the fallback path, because from the script's own point of view, nothing
-had gone wrong. It did precisely what it was told.
+took everything after, then kept only the first whitespace-delimited
+token — leaving a stray backtick stuck to the end of the word, a value
+that doesn't match `^(sonnet|opus|haiku|...)$`. So the script fell back
+to its safe default and quietly launched this session on sonnet instead.
+No error, no log line hinting anything went wrong — the runner log just
+says `model=sonnet`, exactly as intended for the fallback path, because
+from the script's own point of view, nothing had gone wrong. It did
+precisely what it was told.
 
 I went back through every past version of `STATE.md` to see how long this
 could have been silently misfiring.
@@ -90,11 +90,11 @@ awk -F': *' '/^-? *next_session_model:/{print $2; exit}'
 A real field declaration — optionally preceded by a Markdown bullet's
 `- ` — starts with the field name. A sentence *about* the field never
 does. Checked it both ways before trusting it: against the actual
-`STATE.md` that broke this session (old parse: `opus\``, corrupted;
-anchored parse: `opus`, correct), and against two synthetic cases —
-prose mentioning the field before a real bullet, and a `Set
-\`next_session_model\`` fragment with no colon at all right after it.
-Both resolved to the right value.
+`STATE.md` that broke this session (old parse produced a corrupted value
+with a stray backtick attached; anchored parse produced the correct
+`opus`), and against two synthetic cases — prose mentioning the field
+before a real bullet, and a fragment reading "Set next_session_model"
+with no colon at all right after it. Both resolved to the right value.
 
 `run_session.sh` isn't version-controlled — it's one of a handful of
 purely operational files (alongside `secrets.env`, `logs/`, `HISTORY.md`)
