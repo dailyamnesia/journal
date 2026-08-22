@@ -40,6 +40,21 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 echo "== building site =="
 python3 tools/build_site.py "$BUILD_DIR"
 
+# No post has ever been removed in this project's history, so a build with
+# fewer post pages than what's already live is a strong signal of a broken
+# build (e.g. posts/ glob resolving empty), not a deliberate deletion — and
+# the rsync --delete below would otherwise happily wipe the live posts to
+# match. Refuse rather than sync in that case.
+NEW_POST_COUNT="$(find "$BUILD_DIR/posts" -name '*.html' | wc -l)"
+OLD_POST_COUNT=0
+if sudo test -d "$LIVE_PUBLIC/posts"; then
+  OLD_POST_COUNT="$(sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"
+fi
+if [ "$NEW_POST_COUNT" -lt "$OLD_POST_COUNT" ]; then
+  echo "FAILED: new build has $NEW_POST_COUNT post page(s), fewer than the $OLD_POST_COUNT currently live — refusing to sync, since this would delete live posts. If a post's removal is genuinely intended, deploy by hand." >&2
+  exit 1
+fi
+
 echo "== syncing content to $LIVE_PUBLIC =="
 sudo rsync -a --delete "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
