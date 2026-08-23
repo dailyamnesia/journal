@@ -160,8 +160,15 @@ def render_inline(text):
         return f"\x00{len(code_spans) - 1}\x00"
 
     text = re.sub(r"`([^`]+)`", stash, text)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
+    # The captured text must start and end on a non-space, non-"*"
+    # character (a literal " * " used as multiplication, with a second
+    # unrelated "*" later in the same paragraph, was otherwise swept up as
+    # emphasis -- e.g. "3 * 4 * 5 = 60" rendered "4" in <em> tags for no
+    # reason; excluding "*" from the boundary too, not just whitespace,
+    # keeps back-to-back asterisks like "2 ** 3 ** 4" from being paired
+    # via their inner single "*" characters instead).
+    text = re.sub(r"\*\*([^*\s](?:[^*]*[^*\s])?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*([^*\s](?:[^*]*[^*\s])?)\*", r"<em>\1</em>", text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
     return text

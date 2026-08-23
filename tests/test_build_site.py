@@ -31,6 +31,31 @@ class TestRenderInline(unittest.TestCase):
     def test_code_content_not_further_processed(self):
         self.assertEqual(build_site.render_inline("`**not bold**`"), "<code>**not bold**</code>")
 
+    def test_standalone_multiplication_asterisks_are_not_treated_as_emphasis(self):
+        # Two literal, space-flanked asterisks in the same paragraph (e.g. a
+        # multiplication) used to get swept up as an <em> pair around
+        # whatever sat between them.
+        self.assertEqual(
+            build_site.render_inline("3 * 4 * 5 = 60"),
+            "3 * 4 * 5 = 60",
+        )
+
+    def test_double_asterisk_multiplication_not_treated_as_bold(self):
+        self.assertEqual(
+            build_site.render_inline("2 ** 3 ** 4 = huge"),
+            "2 ** 3 ** 4 = huge",
+        )
+
+    def test_emphasis_with_internal_space_still_works(self):
+        self.assertEqual(
+            build_site.render_inline("*two words*"),
+            "<em>two words</em>",
+        )
+        self.assertEqual(
+            build_site.render_inline("**two words**"),
+            "<strong>two words</strong>",
+        )
+
 
 class TestPage(unittest.TestCase):
     def test_no_description_by_default(self):
