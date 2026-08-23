@@ -10,6 +10,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Nothing else here serializes two invocations against each other: each
+# builds into its own unique mktemp dir, but both `rsync -a --delete` steps
+# below write into the same $LIVE_PUBLIC, and whichever invocation's rsync
+# happens to finish last wins regardless of which one started last — a
+# slower-running invocation for an older commit can silently overwrite a
+# faster-running invocation for a newer one, with no error from either side
+# (the HTTP verification at the end only checks status codes, not content).
+exec 200>/tmp/dailyamnesia-deploy.lock
+if ! flock -n 200; then
+  echo "FAILED: another deploy.sh is already running." >&2
+  exit 1
+fi
+
 LIVE_ROOT=/srv/dailyamnesia
 LIVE_PUBLIC="$LIVE_ROOT/public"
 LIVE_SERVER="$LIVE_ROOT/server.js"
