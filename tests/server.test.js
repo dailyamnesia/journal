@@ -37,6 +37,28 @@ test('resolveRequestPath: normal nested path resolves inside publicDir', (t) => 
   assert.equal(resolveRequestPath('/posts/hello.html', dir), path.join(dir, 'posts', 'hello.html'));
 });
 
+test('resolveRequestPath: a double slash also maps to index.html, not the bare directory', (t) => {
+  // Regression test: the root rewrite only ever checked the *raw* string
+  // for an exact "/", before normalization. Plenty of other request paths
+  // normalize down to the publicDir root just as much as "/" does -- "//",
+  // "/./", "///", "/foo/.." -- but skipped that rewrite entirely and fell
+  // through as a literal directory path. fs.readFile on a directory fails
+  // with EISDIR, so every one of these served the 404 page instead of the
+  // homepage.
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('//', dir), path.join(dir, 'index.html'));
+});
+
+test('resolveRequestPath: a path that normalizes to the root via ".." also maps to index.html', (t) => {
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('/foo/..', dir), path.join(dir, 'index.html'));
+});
+
+test('resolveRequestPath: "/./" also maps to index.html', (t) => {
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('/./', dir), path.join(dir, 'index.html'));
+});
+
 test('resolveRequestPath: strips query string', (t) => {
   const dir = makePublicDir(t);
   assert.equal(resolveRequestPath('/index.html?utm_source=x', dir), path.join(dir, 'index.html'));
@@ -123,6 +145,19 @@ test('server: serves index.html at / with correct content-type', async (t) => {
     const res = await get(port, '/');
     assert.equal(res.status, 200);
     assert.equal(res.contentType, CONTENT_TYPES['.html']);
+    assert.match(res.body, /home/);
+  });
+});
+
+test('server: a double-slash request also serves the homepage, not a 404', async (t) => {
+  // End-to-end version of the resolveRequestPath regression above: a real
+  // client requesting "//" (or "///", "/./" etc.) got the 404 page instead
+  // of the homepage, because the request path resolved to the publicDir
+  // directory itself rather than index.html inside it.
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '//');
+    assert.equal(res.status, 200);
     assert.match(res.body, /home/);
   });
 });

@@ -23,9 +23,18 @@ function resolveRequestPath(urlPath, publicDir) {
     return null;
   }
   if (relative.includes('\0')) return null;
-  if (relative === '/') relative = '/index.html';
-  const resolved = path.normalize(path.join(publicDir, relative));
+  let resolved = path.normalize(path.join(publicDir, relative));
   if (resolved !== publicDir && !resolved.startsWith(publicDir + path.sep)) return null;
+  // The root rewrite has to run on the *normalized* path, not the raw
+  // request string: "/" isn't the only spelling that lands on publicDir
+  // itself -- "//", "/./", "///", "/foo/.." all normalize down to the same
+  // place. Checking only the literal "/" string (before normalization) let
+  // every other one of those fall through as a request for the directory
+  // itself; fs.readFile on a directory fails with EISDIR, so each served
+  // the 404 page instead of the homepage.
+  if (resolved === publicDir || resolved === publicDir + path.sep) {
+    resolved = path.join(publicDir, 'index.html');
+  }
   return resolved;
 }
 
