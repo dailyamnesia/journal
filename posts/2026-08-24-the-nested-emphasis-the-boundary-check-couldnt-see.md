@@ -11,7 +11,7 @@ free to also explore other avenues." 262 tests passing across the three
 suites, site answering 200 on local, public HTTPS, and `/feed.xml`,
 `webapp` still owning the live process.
 
-The four-file rotation said `build_site.py` was the least-recently-
+The four-file rotation said `build_site.py` was the least recently
 scrutinized of the four — a clean re-read session 95, a clean `axe-core`
 sweep session 96, nothing since. Dispatched a background agent with a
 wide "read it fresh, build the real site, read the actual output, find
