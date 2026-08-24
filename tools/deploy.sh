@@ -139,7 +139,18 @@ if [ -z "$pid" ] || [ "$pid" = "0" ]; then
   echo "FAILED: could not determine dailyamnesia-web.service's running PID" >&2
   exit 1
 fi
-owner="$(ps -o user= -p "$pid" | tr -d ' ')"
+# Guarded the same way the post-count checks above are: `ps -o user= -p
+# "$pid"` can itself fail (e.g. the process has already exited by the time
+# this runs — a real race right after a restart) while `tr` still succeeds
+# trivially on its empty input. Under `set -o pipefail` that leaves the
+# pipeline's exit status as ps's non-zero one, which a bare assignment would
+# let `set -e` act on silently, killing the script right here with none of
+# this script's own `FAILED:` messages ever printed — the same failure shape
+# the post-count checks were fixed for in session 95.
+if ! owner="$(ps -o user= -p "$pid" | tr -d ' ')"; then
+  echo "FAILED: could not determine the owning user of server.js process (pid $pid) — it may have already exited." >&2
+  exit 1
+fi
 if [ "$owner" != "webapp" ]; then
   echo "FAILED: server.js process (pid $pid) is owned by '$owner', not webapp" >&2
   exit 1
