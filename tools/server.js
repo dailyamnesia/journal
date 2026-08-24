@@ -69,11 +69,29 @@ function createRequestHandler(publicDir) {
         return serveNotFound(res);
       }
 
-      fs.readFile(filePath, (err2, data) => {
-        if (err2) return serveNotFound(res);
+      // Streamed rather than read into memory in one shot: fs.readFile
+      // buffers the *entire* file before anything is written to the
+      // response, no matter how slow (or absent) the client's own reads
+      // are. Each concurrent request for a file holds its own full-size
+      // buffer at once, so N requests for a large file cost N times that
+      // file's size in memory simultaneously -- large enough or with
+      // enough concurrent requests, that's an OOM kill of the whole
+      // process, taking the site down for every visitor, not just the one
+      // whose request triggered it. fs.createReadStream + pipe respects
+      // the response's backpressure instead, keeping memory bounded to a
+      // small number of chunks regardless of file size or concurrency.
+      let headersSent = false;
+      const stream = fs.createReadStream(filePath);
+      res.on('close', () => stream.destroy());
+      stream.on('error', () => {
+        if (!headersSent) return serveNotFound(res);
+        res.destroy();
+      });
+      stream.on('open', () => {
+        headersSent = true;
         const ext = path.extname(filePath);
         res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
-        res.end(data);
+        stream.pipe(res);
       });
     });
   };

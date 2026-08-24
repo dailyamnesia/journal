@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const net = require('node:net');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -267,4 +268,62 @@ test('server: a symlinked directory inside publicDir does not expose its target 
     assert.equal(res.status, 404);
     assert.doesNotMatch(res.body, /should not be reachable/);
   });
+});
+
+test('server: concurrent requests for a large file do not each buffer the whole file in memory', async (t) => {
+  // Regression test: the handler used to read a whole file into a Buffer
+  // with fs.readFile before writing anything to the response. That read
+  // happens in full regardless of whether the client ever consumes a
+  // single byte of the response -- so N concurrent requests for a file
+  // hold N full copies of it in memory at once, with no cap. Against a
+  // real 200MB file and 20 concurrent requests, this OOM-killed the whole
+  // server process in this project's own deployment-sized environment,
+  // taking the site down for every visitor, not just the one whose
+  // request triggered it.
+  //
+  // This test never lets any client read a byte of the response (that's
+  // the point: a slow or non-reading client shouldn't change how much
+  // memory the *server* holds), so a streaming implementation should stay
+  // close to flat while a buffering one scales with N times the file
+  // size. Eight concurrent requests for a 15MB file separate the two
+  // clearly in practice (~25MB vs. ~120MB of RSS growth here), so 70MB
+  // leaves a wide margin on both sides for run-to-run noise.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bigPath = path.join(dir, 'big.html');
+  const SIZE = 15 * 1024 * 1024;
+  fs.writeFileSync(bigPath, Buffer.alloc(SIZE, 'x'));
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const sockets = [];
+  t.after(() => sockets.forEach((s) => s.destroy()));
+
+  if (global.gc) global.gc();
+  await new Promise((r) => setTimeout(r, 50));
+  const before = process.memoryUsage().rss;
+
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /big.html HTTP/1.1\r\nHost: x\r\n\r\n');
+    });
+    // Deliberately no 'data' listener: this client never reads any of the
+    // response body, so the only way memory stays bounded is if the
+    // server itself paces its reads to the file behind the response's
+    // own backpressure, rather than loading the whole file up front.
+    sock.on('error', () => {});
+    sockets.push(sock);
+  }
+
+  await new Promise((r) => setTimeout(r, 500));
+  const after = process.memoryUsage().rss;
+  const deltaMb = (after - before) / (1024 * 1024);
+  assert.ok(
+    deltaMb < 70,
+    `expected RSS growth to stay well under 70MB with ${N} unread requests for a 15MB file, got ${deltaMb.toFixed(1)}MB (looks like the whole file is being buffered per request)`
+  );
 });
