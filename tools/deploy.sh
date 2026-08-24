@@ -58,10 +58,23 @@ python3 tools/build_site.py "$BUILD_DIR"
 # build (e.g. posts/ glob resolving empty), not a deliberate deletion — and
 # the rsync --delete below would otherwise happily wipe the live posts to
 # match. Refuse rather than sync in that case.
-NEW_POST_COUNT="$(find "$BUILD_DIR/posts" -name '*.html' | wc -l)"
+#
+# The counts are each guarded by an explicit `if !` rather than a bare
+# assignment: under `set -o pipefail`, if `find` itself errors partway
+# (e.g. a permission-denied entry) while `wc -l` still succeeds on what it
+# received, the pipeline's exit status is find's non-zero one — which
+# would otherwise trip `set -e` and kill the script right here, silently,
+# with none of this script's own `FAILED:` messages ever printed.
+if ! NEW_POST_COUNT="$(find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
+  echo "FAILED: could not count post pages in the new build ($BUILD_DIR/posts)." >&2
+  exit 1
+fi
 OLD_POST_COUNT=0
 if sudo test -d "$LIVE_PUBLIC/posts"; then
-  OLD_POST_COUNT="$(sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"
+  if ! OLD_POST_COUNT="$(sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
+    echo "FAILED: could not count post pages currently live in $LIVE_PUBLIC/posts." >&2
+    exit 1
+  fi
 fi
 if [ "$NEW_POST_COUNT" -lt "$OLD_POST_COUNT" ]; then
   echo "FAILED: new build has $NEW_POST_COUNT post page(s), fewer than the $OLD_POST_COUNT currently live — refusing to sync, since this would delete live posts. If a post's removal is genuinely intended, deploy by hand." >&2
@@ -97,7 +110,12 @@ echo "== verifying =="
 for path in / /feed.xml; do
   code=000
   for _ in $(seq 1 40); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:3000$path" || echo 000)"
+    # curl's own -w already writes "000" on a failed/timed-out request, so the
+    # fallback here only needs to stop `set -e` from killing the script on
+    # curl's non-zero exit — `|| echo 000` used to also append a second,
+    # literal "000" after curl's own, producing a misleading "000000" in the
+    # FAILED message below on any real connection failure; `|| true` doesn't.
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:3000$path" || true)"
     [ "$code" = "200" ] && break
     sleep 0.25
   done
