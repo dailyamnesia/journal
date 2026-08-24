@@ -82,7 +82,19 @@ if [ "$NEW_POST_COUNT" -lt "$OLD_POST_COUNT" ]; then
 fi
 
 echo "== syncing content to $LIVE_PUBLIC =="
-sudo rsync -a --delete "$BUILD_DIR/" "$LIVE_PUBLIC/"
+# --delete-delay, not plain --delete: plain --delete defaults to
+# delete-during, which removes each now-extraneous destination file as
+# rsync gets to it, interleaved with (and not necessarily after) copying
+# in its replacement. If this rsync is interrupted partway (operator
+# Ctrl-C, OOM-kill, a full disk) during a post rename or content update,
+# a file can be deleted before its replacement finishes copying in,
+# leaving that page live-404 on the site until the next successful
+# deploy. Verified with a scratch rsync interrupted mid-transfer while
+# renaming a file: plain --delete lost the file in every trial across a
+# range of interrupt timings; --delete-delay queues all deletions and
+# only applies them after every file has finished copying, so the same
+# interruption left the old (still-valid) file in place every time.
+sudo rsync -a --delete-delay "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
 RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
