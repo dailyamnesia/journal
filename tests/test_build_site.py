@@ -56,6 +56,41 @@ class TestRenderInline(unittest.TestCase):
             "<strong>two words</strong>",
         )
 
+    def test_bold_containing_nested_italic(self):
+        # The bold regex's captured group used to exclude "*" entirely (to
+        # keep literal multiplication asterisks like "2 ** 3 ** 4" from
+        # being misread as bold), which also blocked any *italic* text
+        # nested inside **bold** from matching at all -- the outer "**"
+        # pair failed to match and leaked as literal asterisks into the
+        # rendered page instead of becoming <strong>, even though the
+        # opposite nesting (**bold** inside *italic*) already worked fine.
+        self.assertEqual(
+            build_site.render_inline("**bold *and italic* together**"),
+            "<strong>bold <em>and italic</em> together</strong>",
+        )
+
+    def test_italic_containing_nested_bold_still_works(self):
+        self.assertEqual(
+            build_site.render_inline("*italic **and bold** together*"),
+            "<em>italic <strong>and bold</strong> together</em>",
+        )
+
+    def test_bold_multiplication_asterisks_still_not_treated_as_bold(self):
+        # Regression guard for the fix to test_bold_containing_nested_italic:
+        # relaxing the bold regex to permit a single nested "*...*" pair
+        # must not reopen the door to a literal "**" used as a Python-style
+        # exponent operator being read as a bold delimiter.
+        self.assertEqual(
+            build_site.render_inline("2 ** 3 ** 4 = huge and **bold** too"),
+            "2 ** 3 ** 4 = huge and <strong>bold</strong> too",
+        )
+
+    def test_triple_asterisk_bold_italic_combo_still_nests_correctly(self):
+        self.assertEqual(
+            build_site.render_inline("***really important***"),
+            "<em><strong>really important</strong></em>",
+        )
+
 
 class TestPage(unittest.TestCase):
     def test_no_description_by_default(self):

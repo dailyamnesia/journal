@@ -167,7 +167,18 @@ def render_inline(text):
     # reason; excluding "*" from the boundary too, not just whitespace,
     # keeps back-to-back asterisks like "2 ** 3 ** 4" from being paired
     # via their inner single "*" characters instead).
-    text = re.sub(r"\*\*([^*\s](?:[^*]*[^*\s])?)\*\*", r"<strong>\1</strong>", text)
+    #
+    # The middle of a **bold** match allows a lone "*" (so a nested
+    # *italic* run can sit inside it, e.g. "**bold *and italic* together**")
+    # but never "**" (so it can't cross into an unrelated bold delimiter or
+    # a "**" used as a literal exponent operator) -- bold used to exclude
+    # "*" everywhere in the middle, not just at the boundary, so any bold
+    # text containing a nested italic run failed to match at all and its
+    # "**" delimiters leaked into the page as literal asterisks instead of
+    # becoming <strong>.
+    text = re.sub(
+        r"\*\*([^*\s](?:(?:[^*]|\*(?!\*))*[^*\s])?)\*\*", r"<strong>\1</strong>", text
+    )
     text = re.sub(r"\*([^*\s](?:[^*]*[^*\s])?)\*", r"<em>\1</em>", text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
