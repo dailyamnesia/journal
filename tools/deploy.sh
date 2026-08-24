@@ -89,17 +89,30 @@ RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
 start-limit-hit after repeated restarts within 10s), recover with:
   sudo systemctl reset-failed dailyamnesia-web.service && sudo systemctl start dailyamnesia-web.service"
 
+# The restart decision can't be gated on the server.js diff alone: if the
+# service is down for a reason unrelated to a code change (a prior restart
+# that itself failed, an OOM-kill, a manual stop) and this deploy has no
+# server.js changes to push, diff-only gating takes the "unchanged, no
+# restart needed" branch and leaves the service down — and since the diff
+# keeps reporting "unchanged" on every later run too, re-running deploy.sh
+# can never bring it back on its own; only a manual `systemctl start` can.
+SERVER_CHANGED=false
 if ! sudo diff -q tools/server.js "$LIVE_SERVER" >/dev/null 2>&1; then
-  echo "== server.js changed, deploying and restarting =="
+  echo "== server.js changed, deploying =="
   sudo cp tools/server.js "$LIVE_SERVER"
   sudo chown webapp:webapp "$LIVE_SERVER"
+  SERVER_CHANGED=true
+fi
+
+if [ "$SERVER_CHANGED" = true ] || ! sudo systemctl is-active --quiet dailyamnesia-web.service; then
+  echo "== (re)starting service =="
   if ! sudo systemctl restart dailyamnesia-web.service; then
     echo "FAILED: systemctl restart didn't succeed." >&2
     echo "$RECOVERY_HINT" >&2
     exit 1
   fi
 else
-  echo "== server.js unchanged, no restart needed =="
+  echo "== server.js unchanged and service already running, no restart needed =="
 fi
 
 echo "== verifying =="
