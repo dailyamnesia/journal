@@ -270,6 +270,29 @@ test('server: a symlinked directory inside publicDir does not expose its target 
   });
 });
 
+test('server: a request that resolves to a real directory gets a clean 404, not a hung-up connection', async (t) => {
+  // Regression test: /posts is a real directory in the actual build output
+  // (unlinked, but reachable by request), and resolveRequestPath's boundary
+  // check happily returns it -- it's a valid path inside publicDir, just not
+  // a file. Opening a directory for reading succeeds on Linux, so
+  // fs.createReadStream's 'open' event fired, headers were already written
+  // as a 200, and only the following read() failed with EISDIR -- too late
+  // to send a 404, since headersSent was already true. The response was
+  // abandoned with buffered-but-unflushed 200 headers, so the client saw the
+  // connection close with zero bytes ("socket hang up"/ECONNRESET),
+  // indistinguishable from the process crashing, instead of a clean 404.
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/posts');
+    assert.equal(res.status, 404);
+    assert.match(res.body, /missing/);
+    // Same proof-of-survival shape as the malformed-request tests: a
+    // follow-up request on the same server confirms nothing was left broken.
+    const followUp = await get(port, '/');
+    assert.equal(followUp.status, 200);
+  });
+});
+
 test('server: concurrent requests for a large file do not each buffer the whole file in memory', async (t) => {
   // Regression test: the handler used to read a whole file into a Buffer
   // with fs.readFile before writing anything to the response. That read

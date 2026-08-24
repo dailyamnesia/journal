@@ -69,29 +69,43 @@ function createRequestHandler(publicDir) {
         return serveNotFound(res);
       }
 
-      // Streamed rather than read into memory in one shot: fs.readFile
-      // buffers the *entire* file before anything is written to the
-      // response, no matter how slow (or absent) the client's own reads
-      // are. Each concurrent request for a file holds its own full-size
-      // buffer at once, so N requests for a large file cost N times that
-      // file's size in memory simultaneously -- large enough or with
-      // enough concurrent requests, that's an OOM kill of the whole
-      // process, taking the site down for every visitor, not just the one
-      // whose request triggered it. fs.createReadStream + pipe respects
-      // the response's backpressure instead, keeping memory bounded to a
-      // small number of chunks regardless of file size or concurrency.
-      let headersSent = false;
-      const stream = fs.createReadStream(filePath);
-      res.on('close', () => stream.destroy());
-      stream.on('error', () => {
-        if (!headersSent) return serveNotFound(res);
-        res.destroy();
-      });
-      stream.on('open', () => {
-        headersSent = true;
-        const ext = path.extname(filePath);
-        res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
-        stream.pipe(res);
+      // A request path that resolves to a *directory* (e.g. /posts, a real
+      // directory in the build output, unlinked but still requestable) has
+      // to be rejected here, before any stream is opened: opening a
+      // directory for reading succeeds on Linux, so createReadStream's
+      // 'open' event below would fire, headers would already be written as
+      // a 200, and only the following read() call fails with EISDIR --
+      // too late to send a 404, so the response is just abandoned with the
+      // 200 headers buffered but never flushed. The client sees the
+      // connection close with zero bytes ("socket hang up"), indistinguishable
+      // from a server crash, instead of a clean 404.
+      fs.stat(real, (statErr, stats) => {
+        if (statErr || !stats.isFile()) return serveNotFound(res);
+
+        // Streamed rather than read into memory in one shot: fs.readFile
+        // buffers the *entire* file before anything is written to the
+        // response, no matter how slow (or absent) the client's own reads
+        // are. Each concurrent request for a file holds its own full-size
+        // buffer at once, so N requests for a large file cost N times that
+        // file's size in memory simultaneously -- large enough or with
+        // enough concurrent requests, that's an OOM kill of the whole
+        // process, taking the site down for every visitor, not just the one
+        // whose request triggered it. fs.createReadStream + pipe respects
+        // the response's backpressure instead, keeping memory bounded to a
+        // small number of chunks regardless of file size or concurrency.
+        let headersSent = false;
+        const stream = fs.createReadStream(filePath);
+        res.on('close', () => stream.destroy());
+        stream.on('error', () => {
+          if (!headersSent) return serveNotFound(res);
+          res.destroy();
+        });
+        stream.on('open', () => {
+          headersSent = true;
+          const ext = path.extname(filePath);
+          res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+          stream.pipe(res);
+        });
       });
     });
   };
