@@ -91,6 +91,36 @@ class TestRenderInline(unittest.TestCase):
             "<em><strong>really important</strong></em>",
         )
 
+    def test_bold_with_unmatched_asterisk_does_not_produce_crossing_tags(self):
+        # Regression guard for the fix to test_bold_containing_nested_italic:
+        # that fix let the bold regex's middle contain a lone "*" (so a
+        # nested *italic* run could sit inside a bold span), but it didn't
+        # require that "*" to be part of an actual matched pair. A bold span
+        # with a genuinely unpaired "*" in it -- e.g. from a literal,
+        # space-free multiplication like "2*a" -- still matched as bold,
+        # leaving that "*" un-rendered inside the new <strong>...</strong>
+        # text. The separate italic pass that runs afterward then treated
+        # that leftover "*" as an ordinary character free to pair with an
+        # unrelated "*" *later in the same paragraph*, including one that
+        # came after the closing "</strong>" tag -- producing invalid,
+        # crossing markup (an <em> that opens before </strong> and closes
+        # after it) instead of well-formed, properly nested elements:
+        # render_inline("**2*a***ba*") used to render
+        # '<strong>2<em>a</strong></em>ba*'. Requiring every "*" allowed in
+        # a bold span's middle to belong to its own self-contained,
+        # already-paired *...* run (not just any lone "*") closes the gap.
+        out = build_site.render_inline("**2*a***ba*")
+        # No tag may close except the most recently opened, still-unclosed
+        # one -- i.e. tags may nest but never cross.
+        stack = []
+        for closing, tag in re.findall(r"<(/?)(em|strong|code)>", out):
+            if not closing:
+                stack.append(tag)
+            else:
+                self.assertTrue(stack and stack[-1] == tag, f"crossing tags in {out!r}")
+                stack.pop()
+        self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
+
 
 class TestPage(unittest.TestCase):
     def test_no_description_by_default(self):

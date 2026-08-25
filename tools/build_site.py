@@ -168,16 +168,37 @@ def render_inline(text):
     # keeps back-to-back asterisks like "2 ** 3 ** 4" from being paired
     # via their inner single "*" characters instead).
     #
-    # The middle of a **bold** match allows a lone "*" (so a nested
-    # *italic* run can sit inside it, e.g. "**bold *and italic* together**")
-    # but never "**" (so it can't cross into an unrelated bold delimiter or
-    # a "**" used as a literal exponent operator) -- bold used to exclude
-    # "*" everywhere in the middle, not just at the boundary, so any bold
-    # text containing a nested italic run failed to match at all and its
-    # "**" delimiters leaked into the page as literal asterisks instead of
-    # becoming <strong>.
+    # The middle of a **bold** match allows a nested *italic* run (e.g.
+    # "**bold *and italic* together**") but never a bare "**" (so it can't
+    # cross into an unrelated bold delimiter or a "**" used as a literal
+    # exponent operator) -- bold used to exclude "*" everywhere in the
+    # middle, not just at the boundary, so any bold text containing a
+    # nested italic run failed to match at all and its "**" delimiters
+    # leaked into the page as literal asterisks instead of becoming
+    # <strong>.
+    #
+    # Any "*" allowed in the middle must belong to such a self-contained,
+    # already-paired *...* run, never a single unmatched "*" -- an earlier
+    # version allowed any lone "*" there (matching "\*(?!\*)" one character
+    # at a time, with no requirement that it pair up with anything). A bold
+    # span with a genuinely unpaired "*" in its middle -- e.g. from a
+    # literal, space-free multiplication like "2*a" -- still matched as
+    # bold, leaving that "*" un-rendered inside the new <strong>...</strong>
+    # text. The later, separate italic pass then still saw that raw "*" as
+    # an ordinary character and was free to pair it with an unrelated "*"
+    # later in the same paragraph, including one that came after the
+    # closing "</strong>" -- producing crossing, invalid markup instead of
+    # well-formed nested or sibling elements:
+    # render_inline("**2*a***ba*") used to render the mismatched
+    # '<strong>2<em>a</strong></em>ba*' (an <em> that opens before
+    # </strong> and closes after it). Requiring every inner "*" to be part
+    # of its own matched pair closes that gap: the stray "*a*" no longer
+    # matches as bold's middle at all, leaving well-formed output instead.
+    _italic_inner = r"\*[^*\s](?:[^*]*[^*\s])?\*"
     text = re.sub(
-        r"\*\*([^*\s](?:(?:[^*]|\*(?!\*))*[^*\s])?)\*\*", r"<strong>\1</strong>", text
+        r"\*\*([^*\s](?:(?:[^*]|" + _italic_inner + r")*[^*\s])?)\*\*",
+        r"<strong>\1</strong>",
+        text,
     )
     text = re.sub(r"\*([^*\s](?:[^*]*[^*\s])?)\*", r"<em>\1</em>", text)
     for i, code in enumerate(code_spans):
