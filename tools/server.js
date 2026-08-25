@@ -58,6 +58,27 @@ function createRequestHandler(publicDir) {
       return res.end('bad request');
     }
 
+    // Tracked and listened for right here, before any async work starts,
+    // rather than attaching res.on('close', ...) down next to where the
+    // stream gets created. fs.realpath and fs.stat below are both async, so
+    // a client that disconnects immediately after sending its request (tab
+    // closed, network drop) can fire `res`'s 'close' event before those two
+    // hops even finish -- 'close' only fires once, so a listener added
+    // afterwards, once the stream finally exists, has already missed it and
+    // will never run. The stream opened later for that request was then
+    // never destroyed, leaking its fd for as long as the process runs: one
+    // per early-disconnected request, unbounded, eventually exhausting the
+    // process's file descriptors (EMFILE) and taking the whole site down
+    // for every visitor. Capturing `closed` and `stream` in this closure
+    // lets every stage below -- even ones that haven't created the stream
+    // yet -- check or react to a disconnect that already happened.
+    let closed = false;
+    let stream = null;
+    res.on('close', () => {
+      closed = true;
+      if (stream) stream.destroy();
+    });
+
     // resolveRequestPath's boundary check is string-based: it only confirms
     // the *requested* path stays inside publicDir. fs.readFile below follows
     // symlinks, so a symlink sitting inside publicDir (pointing anywhere on
@@ -65,6 +86,7 @@ function createRequestHandler(publicDir) {
     // check and still hand its target's contents to any visitor. Resolving
     // the real path first and re-checking containment closes that gap.
     fs.realpath(filePath, (err, real) => {
+      if (closed) return;
       if (err || (real !== realPublicDir && !real.startsWith(realPublicDir + path.sep))) {
         return serveNotFound(res);
       }
@@ -80,6 +102,7 @@ function createRequestHandler(publicDir) {
       // connection close with zero bytes ("socket hang up"), indistinguishable
       // from a server crash, instead of a clean 404.
       fs.stat(real, (statErr, stats) => {
+        if (closed) return;
         if (statErr || !stats.isFile()) return serveNotFound(res);
 
         // Streamed rather than read into memory in one shot: fs.readFile
@@ -94,8 +117,14 @@ function createRequestHandler(publicDir) {
         // the response's backpressure instead, keeping memory bounded to a
         // small number of chunks regardless of file size or concurrency.
         let headersSent = false;
-        const stream = fs.createReadStream(filePath);
-        res.on('close', () => stream.destroy());
+        stream = fs.createReadStream(filePath);
+        if (closed) {
+          // The disconnect raced in right between the check above and this
+          // stream's creation -- destroy it immediately rather than leaving
+          // it to the 'close' listener, which has already fired and won't
+          // fire again.
+          return stream.destroy();
+        }
         stream.on('error', () => {
           if (!headersSent) return serveNotFound(res);
           res.destroy();

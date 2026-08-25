@@ -293,6 +293,69 @@ test('server: a request that resolves to a real directory gets a clean 404, not 
   });
 });
 
+test('server: a client that disconnects before the file is opened does not leak its file descriptor', async (t) => {
+  // Regression test: the res.on('close', () => stream.destroy()) cleanup
+  // below only gets attached after fs.realpath and fs.stat have both
+  // completed -- two async hops after the request comes in. A client that
+  // disconnects immediately, before either of those hops finishes, fires
+  // 'close' on `res` before that listener exists to hear it. 'close' only
+  // fires once, so registering the listener afterwards is too late: it
+  // never sees the event that already happened. The fs.createReadStream
+  // opened later for that same request is then never destroyed, so its
+  // underlying fd is never closed -- one leaked fd per early-disconnected
+  // request, unbounded, eventually exhausting the process's file
+  // descriptors (EMFILE) and taking the whole site down for every visitor.
+  //
+  // Counting this process's own open fds via /proc/self/fd works here
+  // because the test server runs in-process (same pattern as the memory
+  // test below), so a leaked fs.ReadStream fd shows up directly.
+  const dir = makePublicDir(t);
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const countOpenFds = () => fs.readdirSync('/proc/self/fd').length;
+
+  const sockets = [];
+  t.after(() => sockets.forEach((s) => s.destroy()));
+
+  const before = countOpenFds();
+
+  const N = 30;
+  for (let i = 0; i < N; i++) {
+    await new Promise((resolve) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        // The write callback fires once the request bytes are actually
+        // handed to the kernel socket buffer -- destroying the socket
+        // before that (e.g. synchronously right after write()) can discard
+        // the write entirely, so the server never even sees the request.
+        // Waiting for the callback, then destroying immediately afterwards,
+        // reproduces a real client hanging up right after sending a
+        // request (tab closed, network drop) without giving the server any
+        // extra time to get ahead of it.
+        sock.write('GET /feed.xml HTTP/1.1\r\nHost: x\r\n\r\n', () => {
+          sock.destroy();
+          resolve();
+        });
+      });
+      sock.on('error', () => {});
+      sockets.push(sock);
+    });
+  }
+
+  await new Promise((r) => setTimeout(r, 500));
+  const after = countOpenFds();
+  const delta = after - before;
+  // A fixed server should leave at most a handful of fds open (test/runtime
+  // noise); a leaking one opens close to N of them, one per request, and
+  // never closes any. Half of N is a wide margin between the two.
+  assert.ok(
+    delta < N / 2,
+    `expected far fewer than ${N} new open file descriptors in this process after ${N} early-disconnected requests, got ${delta} (looks like each one leaked the fd for a file it never got to close)`
+  );
+});
+
 test('server: concurrent requests for a large file do not each buffer the whole file in memory', async (t) => {
   // Regression test: the handler used to read a whole file into a Buffer
   // with fs.readFile before writing anything to the response. That read
