@@ -356,7 +356,17 @@ def _strip_invalid_xml_chars(text):
 
 
 def render_feed(posts, base_url):
-    updated = _entry_timestamp(posts[0]) if posts else "1970-01-01T00:00:00Z"
+    # _entry_timestamp() falls back to the post's raw `date` frontmatter
+    # value for an uncommitted post (see UNCOMMITTED_SENTINEL above) --
+    # free-form text with no format validation anywhere in parse_post(), so
+    # it needs the same escaping/sanitizing as every other field here (title,
+    # link, id, summary), not just the commit-derived timestamps that happen
+    # to always already be well-formed.
+    updated = (
+        html.escape(_strip_invalid_xml_chars(_entry_timestamp(posts[0])))
+        if posts
+        else "1970-01-01T00:00:00Z"
+    )
     entries = []
     for post in posts:
         url = f"{base_url}/posts/{post['slug']}.html"
@@ -364,7 +374,7 @@ def render_feed(posts, base_url):
     <title>{html.escape(_strip_invalid_xml_chars(post['title']))}</title>
     <link href="{html.escape(url)}"/>
     <id>{html.escape(url)}</id>
-    <updated>{_entry_timestamp(post)}</updated>
+    <updated>{html.escape(_strip_invalid_xml_chars(_entry_timestamp(post)))}</updated>
     <summary>{html.escape(_strip_invalid_xml_chars(_summary(post['body'])))}</summary>
   </entry>""")
     return f"""<?xml version="1.0" encoding="utf-8"?>

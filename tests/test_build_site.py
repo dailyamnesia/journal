@@ -355,6 +355,24 @@ class TestRenderFeed(unittest.TestCase):
         xml.dom.minidom.parseString(feed)  # raises if malformed
         self.assertNotIn("\x1b", feed)
 
+    def test_unescaped_character_in_date_does_not_break_xml(self):
+        # <updated> (both the feed-level one and each entry's) is built from
+        # _entry_timestamp(), which for an uncommitted post falls back to the
+        # post's raw `date` frontmatter value verbatim -- unlike every other
+        # field this function emits (title, link, id, summary), it was never
+        # run through html.escape(). Frontmatter's `date` is free-form text
+        # with no format validation anywhere in parse_post(), so a value
+        # containing a bare "&" or "<" produced a feed.xml that fails to
+        # parse, the same XML-well-formedness failure already fixed for
+        # title/summary, just left open on this field.
+        feed = build_site.render_feed(
+            [self._post(date="2026-08-25 & counting", commit_time=build_site.UNCOMMITTED_SENTINEL)],
+            "https://example.test",
+        )
+        xml.dom.minidom.parseString(feed)  # raises if malformed
+        self.assertNotIn(" & counting", feed)
+        self.assertIn("&amp;", feed)
+
 
 class TestParseCharter(unittest.TestCase):
     def test_parses_title_and_body(self):
