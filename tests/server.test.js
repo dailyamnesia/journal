@@ -270,6 +270,94 @@ test('server: a symlinked directory inside publicDir does not expose its target 
   });
 });
 
+test('server: a symlink swapped mid-request cannot bypass the realpath containment check', async (t) => {
+  // Regression test: the realpath-containment check above resolves and
+  // verifies `real`, but the stream that actually gets sent to the client
+  // was opened from `filePath` -- the original, unresolved request path --
+  // not from the verified `real` path. fs.createReadStream re-resolves any
+  // symlink in `filePath` at open time, which is a separate, later moment
+  // than the fs.realpath check above it. A symlink that points somewhere
+  // safe at check time but gets swapped to point outside publicDir before
+  // fs.createReadStream opens it slips straight through: the check passes
+  // against the old target, and the bytes actually served come from the
+  // new one. This is a time-of-check-to-time-of-use gap reopening the exact
+  // symlink-escape hole the realpath check above was added to close -- and
+  // in practice it isn't rare or theoretical: hammering a single swapped
+  // symlink with concurrent requests here reproduces it on a sizeable
+  // fraction of them, not just as an edge case.
+  const dir = makePublicDir(t);
+  const secretPath = path.join(os.tmpdir(), `server-test-toctou-secret-${process.pid}.txt`);
+  const secretMarker = 'TOCTOU_SECRET_SHOULD_NEVER_BE_SERVED';
+  fs.writeFileSync(secretPath, secretMarker);
+  t.after(() => fs.rmSync(secretPath, { force: true }));
+
+  const linkPath = path.join(dir, 'racelink');
+  const safeTarget = path.join(dir, 'index.html');
+  const tmpLink = path.join(dir, 'racelink.tmp');
+  fs.symlinkSync(safeTarget, linkPath);
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  // The swap has to come from a genuinely separate OS process, not a loop
+  // on this same event loop: the request handler's own async fs hops
+  // (fs.realpath, fs.stat, fs.createReadStream's open) run through libuv's
+  // thread pool, but their *callbacks* land back on this same single
+  // JS thread. A same-process swap loop (even one that yields via
+  // setImmediate between iterations) only ever gets a turn *between* those
+  // callbacks, not truly concurrently with the thread-pool work underneath
+  // them, so it rarely lands inside the actual gap. A separate process
+  // renaming on its own OS schedule has no such alignment with this
+  // process's event loop and reliably lands inside it instead.
+  const { spawn } = require('node:child_process');
+  const swapperScript = `
+    const fs = require('fs');
+    const tmpLink = ${JSON.stringify(tmpLink)};
+    const linkPath = ${JSON.stringify(linkPath)};
+    const safeTarget = ${JSON.stringify(safeTarget)};
+    const secretPath = ${JSON.stringify(secretPath)};
+    while (true) {
+      try {
+        fs.symlinkSync(secretPath, tmpLink);
+        fs.renameSync(tmpLink, linkPath);
+        fs.symlinkSync(safeTarget, tmpLink);
+        fs.renameSync(tmpLink, linkPath);
+      } catch {}
+    }
+  `;
+  const swapper = spawn(process.execPath, ['-e', swapperScript]);
+  t.after(() => swapper.kill());
+
+  // Give the swapper a moment to actually start racing before we pile on
+  // requests, and hold it running for the duration of the burst below.
+  await new Promise((r) => setTimeout(r, 100));
+
+  const attempts = 300;
+  let leaked = 0;
+  await Promise.all(Array.from({ length: attempts }, () => new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /racelink HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    const chunks = [];
+    sock.on('data', (c) => chunks.push(c));
+    sock.on('error', () => resolve());
+    sock.on('close', () => {
+      if (Buffer.concat(chunks).toString().includes(secretMarker)) leaked++;
+      resolve();
+    });
+  })));
+
+  swapper.kill();
+
+  assert.equal(
+    leaked,
+    0,
+    `a symlink swapped between the containment check and the stream open must never let a visitor read its post-swap target (leaked on ${leaked}/${attempts} requests)`
+  );
+});
+
 test('server: a request that resolves to a real directory gets a clean 404, not a hung-up connection', async (t) => {
   // Regression test: /posts is a real directory in the actual build output
   // (unlinked, but reachable by request), and resolveRequestPath's boundary

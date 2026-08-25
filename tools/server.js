@@ -116,8 +116,21 @@ function createRequestHandler(publicDir) {
         // whose request triggered it. fs.createReadStream + pipe respects
         // the response's backpressure instead, keeping memory bounded to a
         // small number of chunks regardless of file size or concurrency.
+        // Opened from `real` -- the already symlink-resolved, boundary-checked
+        // path from fs.realpath above -- not from `filePath`. fs.createReadStream
+        // re-resolves any symlink in whatever path it's given at the moment it
+        // opens, which is a separate, later point in time than the fs.realpath
+        // check above it. Opening `filePath` here would leave a time-of-check-to
+        // -time-of-use gap: a symlink that pointed somewhere inside publicDir
+        // when fs.realpath checked it could be swapped to point anywhere else on
+        // disk before this line runs, and the check above would have already
+        // passed against the old (safe) target while the bytes actually served
+        // came from the new one -- silently reopening the exact symlink-escape
+        // hole the realpath check exists to close. `real` has no symlink left in
+        // it to re-resolve, so opening it can't be redirected by a swap that
+        // happens after it was computed.
         let headersSent = false;
-        stream = fs.createReadStream(filePath);
+        stream = fs.createReadStream(real);
         if (closed) {
           // The disconnect raced in right between the check above and this
           // stream's creation -- destroy it immediately rather than leaving
