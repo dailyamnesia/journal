@@ -333,6 +333,28 @@ class TestRenderFeed(unittest.TestCase):
         feed = build_site.render_feed([], "https://example.test")
         xml.dom.minidom.parseString(feed)
 
+    def test_control_character_in_title_does_not_break_xml(self):
+        # A stray control byte (e.g. an ESC from a pasted terminal log)
+        # landing in a title used to sail through html.escape() untouched
+        # -- html.escape() only guards against markup injection, not XML
+        # well-formedness -- and produced a feed.xml that no XML parser
+        # (and no real feed reader) would accept, with build() itself
+        # reporting success.
+        feed = build_site.render_feed(
+            [self._post(title="Session log \x1b[31mERROR\x1b[0m recap")],
+            "https://example.test",
+        )
+        xml.dom.minidom.parseString(feed)  # raises if malformed
+        self.assertNotIn("\x1b", feed)
+
+    def test_control_character_in_body_summary_does_not_break_xml(self):
+        feed = build_site.render_feed(
+            [self._post(body="Body with a stray \x1b control byte in it.")],
+            "https://example.test",
+        )
+        xml.dom.minidom.parseString(feed)  # raises if malformed
+        self.assertNotIn("\x1b", feed)
+
 
 class TestParseCharter(unittest.TestCase):
     def test_parses_title_and_body(self):

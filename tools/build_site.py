@@ -334,17 +334,38 @@ def render_start_here(oldest):
     )
 
 
+_INVALID_XML_CHARS_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+
+
+def _strip_invalid_xml_chars(text):
+    """Drop characters XML 1.0 forbids outright (most C0 control codes, lone
+    surrogates, and the U+FFFE/U+FFFF noncharacters).
+
+    html.escape() only guards against markup injection (<, &, quotes) -- it
+    has nothing to say about these, so a title or body that picked up a
+    stray control byte (e.g. an ESC from a pasted terminal log) passed
+    through render_feed() untouched and produced a feed.xml that is not
+    well-formed XML. build() itself never noticed (it just writes the
+    string out and exits 0), and deploy.sh's own verification only checks
+    HTTP status codes on / and /feed.xml, not that the feed actually
+    parses -- so the one bad character would ship to production silently,
+    and most feed readers reject the *entire* document over it, breaking
+    the feed for every post, not just the one with the bad character.
+    """
+    return _INVALID_XML_CHARS_RE.sub("", text)
+
+
 def render_feed(posts, base_url):
     updated = _entry_timestamp(posts[0]) if posts else "1970-01-01T00:00:00Z"
     entries = []
     for post in posts:
         url = f"{base_url}/posts/{post['slug']}.html"
         entries.append(f"""  <entry>
-    <title>{html.escape(post['title'])}</title>
+    <title>{html.escape(_strip_invalid_xml_chars(post['title']))}</title>
     <link href="{html.escape(url)}"/>
     <id>{html.escape(url)}</id>
     <updated>{_entry_timestamp(post)}</updated>
-    <summary>{html.escape(_summary(post['body']))}</summary>
+    <summary>{html.escape(_strip_invalid_xml_chars(_summary(post['body'])))}</summary>
   </entry>""")
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
