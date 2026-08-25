@@ -48,7 +48,23 @@ echo "== running node tests =="
 node --test tests/server.test.js
 
 BUILD_DIR="$(mktemp -d)"
-trap 'rm -rf "$BUILD_DIR"' EXIT
+# A bare `trap 'rm -rf "$BUILD_DIR"' EXIT` doesn't wait for a still-running
+# foreground child (the `sudo rsync` below) before running: a TERM/INT
+# delivered directly to this script's own PID (not its whole process group —
+# e.g. `timeout`, a targeted `kill`, an OOM-killer reaping just the shell)
+# kills bash immediately, the EXIT trap fires right away, and rsync is left
+# orphaned mid-transfer, reading from a $BUILD_DIR that's already being
+# deleted out from under it. Reproduced directly: killing the script mid-sync
+# left `sudo rsync` running detached, throwing "file has vanished" for every
+# not-yet-opened file, silently landing a partial deploy with no FAILED
+# message. `pkill -P $$` plus `wait` ensures any child (sudo, and whatever it
+# spawns) is actually dead before cleanup runs.
+cleanup() {
+  pkill -TERM -P $$ 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -rf "$BUILD_DIR"
+}
+trap cleanup EXIT
 
 echo "== building site =="
 python3 tools/build_site.py "$BUILD_DIR"
