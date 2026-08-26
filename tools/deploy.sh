@@ -10,6 +10,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+LOCKFILE=/tmp/dailyamnesia-deploy.lock
+
 # Nothing else here serializes two invocations against each other: each
 # builds into its own unique mktemp dir, but both `rsync -a --delete` steps
 # below write into the same $LIVE_PUBLIC, and whichever invocation's rsync
@@ -17,10 +19,36 @@ cd "$REPO_ROOT"
 # slower-running invocation for an older commit can silently overwrite a
 # faster-running invocation for a newer one, with no error from either side
 # (the HTTP verification at the end only checks status codes, not content).
-exec 200>/tmp/dailyamnesia-deploy.lock
-if ! flock -n 200; then
-  echo "FAILED: another deploy.sh is already running." >&2
-  exit 1
+#
+# Locking via a self-re-exec through `flock --close`, not a plain
+# `exec 200>lock; flock -n 200` in this same shell: a plain `exec`-opened fd
+# has no close-on-exec bit, so it's inherited by every subprocess this script
+# spawns (the test suites, rsync, sudo, and whatever any of those in turn
+# fork) — and by extension, by any grandchild that outlives its own immediate
+# parent (gets reparented instead of reaped), which then holds the flock
+# indefinitely with no connection to this script even still existing. The
+# `cleanup()` trap below only reaches direct children of this script's own
+# PID, so it can't reach a reparented grandchild either. Reproduced directly:
+# a scratch script matching the old exec+flock+trap-cleanup shape exactly,
+# made to spawn one detached grandchild the way a test runner's
+# `child_process.spawn` (fired-and-forgotten, never awaited) can, exited
+# clean — but the very next invocation, seconds later, failed with "another
+# deploy.sh is already running" against zero real deploy-related processes,
+# because the orphaned grandchild alone still held the lock fd. `flock
+# --close` closes the lock fd inside the process it launches (and everything
+# that process forks) before ever running it, so nothing downstream can ever
+# inherit it — verified against the same reproduction: the fixed version's
+# lock fd is held by nobody once the script exits, orphaned grandchild or
+# not, and a concurrent second invocation is still correctly rejected while a
+# first is genuinely still running.
+if [ "${DAILYAMNESIA_DEPLOY_LOCKED:-}" != 1 ]; then
+  status=0
+  DAILYAMNESIA_DEPLOY_LOCKED=1 flock -n --close -E 99 "$LOCKFILE" "$REPO_ROOT/tools/deploy.sh" "$@" || status=$?
+  if [ "$status" -eq 99 ]; then
+    echo "FAILED: another deploy.sh is already running." >&2
+    exit 1
+  fi
+  exit "$status"
 fi
 
 LIVE_ROOT=/srv/dailyamnesia
