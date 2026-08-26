@@ -125,6 +125,33 @@ if [ "$NEW_POST_COUNT" -lt "$OLD_POST_COUNT" ]; then
   exit 1
 fi
 
+# The lock acquired via `flock --close` above is held by the flock
+# supervisor process (this script's own parent in the process tree), not by
+# this process itself — that fork is unavoidable once --close is in play,
+# since closing this process's own copy of the fd right before it started
+# running means *something else* has to be left holding it. That supervisor
+# can die independently of this actual deploy still running — killed
+# directly (e.g. an operator debugging a "stuck" deploy targets the most
+# descriptive-looking `ps` line, which is the supervisor's) or by an
+# OOM-killer preferring an idle process blocked in wait() over an actively-
+# running rsync/test child, the same threat model the cleanup() comment
+# above already treats as real. If that happens, this lock is released the
+# instant the supervisor dies, and a second invocation can already be
+# running concurrently against the same $LIVE_PUBLIC by the time this
+# process reaches the rsync below — exactly the two-racing-rsyncs scenario
+# the whole lock exists to prevent. Bash's own $PPID is cached at shell
+# startup and won't reflect the supervisor's death (it keeps reporting the
+# supervisor's original, now-dead PID), so the live value has to be looked
+# up fresh via `ps`, not read from $PPID. Reproduced directly with a scratch
+# copy of this exact lock shape: killing only the supervisor mid-run let the
+# simulated sync step run to completion, unsupervised, every time; this
+# check, added right before the one genuinely irreversible step, catches it
+# and aborts instead.
+if [ "$(ps -o ppid= -p $$ | tr -d ' ')" = "1" ]; then
+  echo "FAILED: this deploy's lock-holding process is gone (reparented to init) — a concurrent deploy may already be running; refusing to sync." >&2
+  exit 1
+fi
+
 echo "== syncing content to $LIVE_PUBLIC =="
 # --delete-delay, not plain --delete: plain --delete defaults to
 # delete-during, which removes each now-extraneous destination file as
