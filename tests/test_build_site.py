@@ -173,6 +173,44 @@ class TestRenderMarkdown(unittest.TestCase):
         self.assertIn("posts/example.md", str(ctx.exception))
         self.assertIn("unterminated code fence", str(ctx.exception))
 
+    def test_content_line_starting_with_backticks_does_not_close_the_fence_early(self):
+        # A code block whose content itself demonstrates fence syntax (very
+        # plausible for a blog about building this exact renderer) used to
+        # have that content line -- because it merely *starts* with "```",
+        # same as a language-tagged opener like "```python" would -- treated
+        # as the fence's own close. Only an exact "```" line (no trailing
+        # info-string) may close a fence; a line with trailing content after
+        # the backticks is content, same as it's permitted to be an opener.
+        body = (
+            "```\n"
+            "```python is how you'd tag it, but this renderer only supports\n"
+            "plain triple-backtick fences, no language tags.\n"
+            "```"
+        )
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<pre><code>```python is how you&#x27;d tag it, but this renderer only supports\n"
+            "plain triple-backtick fences, no language tags.</code></pre>",
+        )
+
+    def test_fully_nested_fence_example_raises_instead_of_silently_corrupting(self):
+        # A complete nested fenced example (its own open, content, and
+        # close, all using the same plain "```" this renderer supports) is
+        # inherently ambiguous to a single-length-fence parser -- nothing
+        # distinguishes the inner close from the outer one. Before, this
+        # produced no error at all: it silently emitted two empty <pre><code>
+        # blocks and leaked the inner example's own content out as a bogus
+        # visible paragraph, both on the page and in the feed's <summary>.
+        # Failing loudly here (as an ordinary unterminated-fence ValueError,
+        # the same one build.py already surfaces for other bad input) is far
+        # safer than shipping silently-mangled HTML to production -- deploy.sh
+        # runs this build step under `set -euo pipefail` and stops rather
+        # than proceeding to sync broken output.
+        body = "```\n```python\nprint('hello')\n```\n```\n\nReal paragraph after."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("unterminated code fence", str(ctx.exception))
+
     def test_blockquote(self):
         self.assertEqual(
             build_site.render_markdown("> quoted line"),
@@ -206,6 +244,18 @@ class TestSummary(unittest.TestCase):
 
     def test_skips_leading_heading_and_code_fence(self):
         body = "## Heading\n\n```\ncode\n```\n\nActual first paragraph."
+        self.assertEqual(build_site._summary(body), "Actual first paragraph.")
+
+    def test_content_line_starting_with_backticks_does_not_end_the_leading_fence_early(self):
+        # Mirrors render_markdown()'s own fix: _summary() re-parses the raw
+        # markdown separately and used to toggle out of "in code" mode on
+        # *any* line starting with "```", not just an exact close. A leading
+        # fence containing a language-tagged-looking content line (e.g.
+        # "```python") toggled out of code mode right there, so the fence's
+        # own remaining content leaked into the summary as if it were the
+        # post's real first paragraph, instead of being skipped entirely as
+        # a fence and falling through to the actual first paragraph after it.
+        body = "```\n```python\nprint('hi')\n```\n\nActual first paragraph."
         self.assertEqual(build_site._summary(body), "Actual first paragraph.")
 
     def test_strips_backticks_and_asterisks(self):

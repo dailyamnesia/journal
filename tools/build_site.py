@@ -230,7 +230,21 @@ def render_markdown(body, source="post"):
             flush_quote()
             i += 1
             code_lines = []
-            while i < len(lines) and not lines[i].startswith("```"):
+            # Only an exact "```" line (no trailing info-string) closes the
+            # fence -- the opening line is matched permissively (startswith,
+            # so "```python"/"```bash" language tags work, as real posts in
+            # this repo use extensively), but a content line that happens to
+            # start with "```" too (e.g. a post demonstrating this renderer's
+            # own fence syntax, wrapping a sample "```python ... ```" block
+            # inside an outer fence) must not itself be mistaken for the
+            # close. It used to be: any line starting with "```" closed the
+            # fence, so render_markdown("```\n```python\nprint(1)\n```\n```")
+            # -- an outer fence containing a literal nested fenced example --
+            # closed on the inner "```python" line, leaving an empty code
+            # block, dumping "print(1)" out as a bogus visible paragraph,
+            # and opening a second, also-empty code block from the line
+            # that was meant to be the inner block's own close.
+            while i < len(lines) and lines[i].rstrip() != "```":
                 code_lines.append(lines[i])
                 i += 1
             if i >= len(lines):
@@ -277,16 +291,24 @@ def _summary(body):
     quoting = False
     in_code = False
     for line in body.split("\n"):
-        if line.startswith("```"):
+        if not in_code and line.startswith("```"):
             # render_markdown() flushes the current paragraph/quote before a
             # fence starts, same as a blank line does; a fence with nothing
             # accumulated yet (before the real first paragraph) is skipped,
             # same as a leading heading is below.
             if paragraph:
                 break
-            in_code = not in_code
+            in_code = True
             continue
         if in_code:
+            # Mirrors render_markdown()'s own close condition: only an exact
+            # "```" line ends the fence, not any line that merely starts
+            # with backticks (a nested fenced-code example inside an outer
+            # fence, e.g. "```python", must not prematurely end it -- see
+            # the matching comment in render_markdown() for the concrete
+            # repro).
+            if line.rstrip() == "```":
+                in_code = False
             continue
         if line.strip() == "":
             if paragraph:
