@@ -236,6 +236,19 @@ class TestRenderMarkdown(unittest.TestCase):
         # like ">>>") is ordinary paragraph text, not a blockquote.
         self.assertEqual(build_site.render_markdown(">>> foo"), "<p>&gt;&gt;&gt; foo</p>")
 
+    def test_blank_quote_line_continues_a_multi_paragraph_blockquote(self):
+        # A bare ">" (no trailing content) is how a multi-paragraph
+        # blockquote is written -- it has no character after ">" to be a
+        # space, but it's still part of the same blockquote, not new,
+        # unrelated content. This used to flush the in-progress quote,
+        # render the bare ">" itself as a bogus "<p>&gt;</p>" paragraph, and
+        # open a second, separate <blockquote> for what followed.
+        body = "> Para one.\n>\n> Para two."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>Para one. Para two.</p></blockquote>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -319,6 +332,14 @@ class TestSummary(unittest.TestCase):
     def test_paragraph_with_no_blank_line_before_it_still_ends_a_blockquote(self):
         body = "> Quoted text\nSecond paragraph line."
         self.assertEqual(build_site._summary(body), "Quoted text")
+
+    def test_blank_quote_line_continues_a_multi_paragraph_blockquote(self):
+        # Mirrors render_markdown()'s own fix: a bare ">" is a blank line
+        # inside a multi-paragraph blockquote, not new, unrelated content
+        # that ends it (see the matching comment in render_markdown() for
+        # the concrete repro of the old behavior).
+        body = "> Para one.\n>\n> Para two."
+        self.assertEqual(build_site._summary(body), "Para one. Para two.")
 
 
 class TestParsePost(unittest.TestCase):

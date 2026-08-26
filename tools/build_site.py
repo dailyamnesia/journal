@@ -258,9 +258,24 @@ def render_markdown(body, source="post"):
             out.append(f"<h2>{render_inline(line[3:])}</h2>")
             i += 1
             continue
-        if line.startswith("> "):
+        if line.startswith("> ") or line.rstrip() == ">":
+            # A bare ">" (no trailing content) is a blank line *inside* a
+            # blockquote -- the natural way to write a multi-paragraph quote
+            # -- not the start of new, unrelated content. Requiring a space
+            # after "> " (per test_blockquote_marker_without_trailing_space_
+            # is_not_special, so a REPL prompt like ">>> foo" stays literal
+            # text) used to also reject this contentless line, since it has
+            # no character after ">" to be a space at all. That flushed the
+            # in-progress quote early, rendered the bare ">" itself as a
+            # bogus "<p>&gt;</p>" paragraph, and then opened a *second*,
+            # separate <blockquote> for the remaining lines -- e.g.
+            # render_markdown("> Para one.\n>\n> Para two.") produced three
+            # blocks (two blockquotes sandwiching a stray "&gt;" paragraph)
+            # instead of one blockquote containing both paragraphs.
             flush_paragraph()
-            quote.append(line[2:].strip())
+            content = line[2:].strip() if line.startswith("> ") else ""
+            if content:
+                quote.append(content)
             i += 1
             continue
         if line.strip() == "":
@@ -318,11 +333,18 @@ def _summary(body):
             if paragraph:
                 break
             continue
-        if line.startswith("> "):
+        if line.startswith("> ") or line.rstrip() == ">":
+            # Mirrors render_markdown()'s own fix: a bare ">" is a blank
+            # line inside a multi-paragraph blockquote, not new content, so
+            # it must not be treated as ordinary text that ends the quote
+            # (see the matching comment in render_markdown() for the
+            # concrete repro).
             if paragraph and not quoting:
                 break
             quoting = True
-            paragraph.append(line[2:].strip())
+            content = line[2:].strip() if line.startswith("> ") else ""
+            if content:
+                paragraph.append(content)
             continue
         if paragraph and quoting:
             break
