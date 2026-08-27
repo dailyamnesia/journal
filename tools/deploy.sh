@@ -69,13 +69,24 @@ if [ "$LOCAL_REV" != "$REMOTE_REV" ]; then
   exit 1
 fi
 
-echo "== running python tests =="
-python3 -m unittest discover -s tests
-
-echo "== running node tests =="
-node --test tests/server.test.js
-
-BUILD_DIR="$(mktemp -d)"
+# Export the exact verified commit right now, before either test suite runs:
+# the two suites together take upwards of 55 seconds, and until this export
+# existed, nothing re-checked git state between this point and the "== building
+# site ==" step below, which read source files straight from this live
+# checkout. build_site.py derives every source path (POSTS_DIR, CHARTER_PATH,
+# STATIC_DIR) from its own `__file__`, so building the exported copy instead
+# makes the deployed content immune to anything that happens to this live
+# checkout for the rest of the script's run, rather than merely narrowing the
+# window with a re-check that would itself still race the build's own file
+# reads. Reproduced directly: a scratch harness matching this
+# check-then-sleep-then-build shape exactly shipped a real uncommitted edit
+# made during the simulated test-suite window when building straight from the
+# live tree; building from a `git archive` export of the just-verified commit
+# instead left the edit out, even though `git status` still showed it
+# afterward. BUILD_SRC is set up alongside BUILD_DIR's own cleanup below,
+# since both are temp dirs this script owns for the rest of its run.
+BUILD_SRC="$(mktemp -d)"
+BUILD_DIR=""
 # A bare `trap 'rm -rf "$BUILD_DIR"' EXIT` doesn't wait for a still-running
 # foreground child (the `sudo rsync` below) before running: a TERM/INT
 # delivered directly to this script's own PID (not its whole process group —
@@ -90,12 +101,21 @@ BUILD_DIR="$(mktemp -d)"
 cleanup() {
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
-  rm -rf "$BUILD_DIR"
+  rm -rf "$BUILD_SRC" "$BUILD_DIR"
 }
 trap cleanup EXIT
+git archive "$LOCAL_REV" | tar -x -C "$BUILD_SRC"
+
+echo "== running python tests =="
+python3 -m unittest discover -s tests
+
+echo "== running node tests =="
+node --test tests/server.test.js
+
+BUILD_DIR="$(mktemp -d)"
 
 echo "== building site =="
-python3 tools/build_site.py "$BUILD_DIR"
+python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"
 
 # No post has ever been removed in this project's history, so a build with
 # fewer post pages than what's already live is a strong signal of a broken
