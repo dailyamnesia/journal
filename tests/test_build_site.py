@@ -423,6 +423,59 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("date", str(ctx.exception))
 
+    def test_non_iso_date_format_names_the_file(self):
+        # A non-empty date in the wrong shape (a human-written "Aug 30,
+        # 2026", or a copy-paste of "08/30/2026") used to sail straight
+        # through: `posts.sort()` compares "date" as a plain string, so a
+        # differently-formatted value lands wherever its characters happen
+        # to compare against real "YYYY-MM-DD" values, not where the post
+        # was actually written -- and the feed's <updated> value became the
+        # malformed "Aug 30, 2026T00:00:00Z". Must raise the same
+        # named-file error the empty/missing cases already do.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: Something\ndate: Aug 30, 2026\n---\nBody with a malformed date.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("date", str(ctx.exception))
+
+    def test_no_dash_iso_date_is_rejected_despite_fromisoformat_accepting_it(self):
+        # Since Python 3.11, `datetime.date.fromisoformat()` also accepts a
+        # dashless "20260830" form -- valid ISO 8601, but not the
+        # "YYYY-MM-DD" shape every post in this journal actually uses, and
+        # a dashless value would itself sort inconsistently against the
+        # dashed dates it's meant to be interchangeable with. The explicit
+        # format check must reject it even though fromisoformat() alone
+        # would happily parse it.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: Something\ndate: 20260830\n---\nBody with a dashless date.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+
+    def test_calendar_invalid_date_names_the_file(self):
+        # "2026-02-30" matches the YYYY-MM-DD *shape* but isn't a real date
+        # -- February never has a 30th. The format regex alone would miss
+        # this; the date must actually be constructed to catch it.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: Something\ndate: 2026-02-30\n---\nBody with an invalid calendar date.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("date", str(ctx.exception))
+
     def test_uncommitted_file_gets_sentinel_commit_time(self):
         # A file outside this repo's worktree can't be resolved by `git log`
         # (exactly what's true of a just-written, not-yet-committed post at

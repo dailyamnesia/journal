@@ -9,6 +9,7 @@ directory.
 
 Usage: build_site.py [output_dir]   (default: _site)
 """
+import datetime
 import html
 import re
 import subprocess
@@ -131,6 +132,28 @@ def parse_post(path):
         # malformed feed <updated> timestamp instead of failing here.
         if not meta.get(required):
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
+    # A non-empty but wrongly-formatted date (e.g. "Aug 30, 2026", or a
+    # copy-paste of "08/30/2026") passes the check above and used to flow
+    # straight through: it corrupts the newest-first sort (posts.sort()
+    # compares "date" as a plain string, so a differently-formatted value
+    # lands wherever its characters happen to compare, not where the post
+    # was actually written) and produces a malformed feed <updated> value
+    # (e.g. "Aug 30, 2026T00:00:00Z"). Matched against an exact YYYY-MM-DD
+    # pattern rather than `datetime.date.fromisoformat()` alone, which
+    # since Python 3.11 also accepts dashless "20260830" and ISO week dates
+    # -- neither matches this journal's actual convention. A value that
+    # merely looks right ("2026-02-30") is caught too, by constructing the
+    # date rather than only matching the pattern.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", meta["date"]):
+        raise ValueError(
+            f"{path}: frontmatter 'date' must be in YYYY-MM-DD form, got {meta['date']!r}"
+        )
+    try:
+        datetime.date.fromisoformat(meta["date"])
+    except ValueError:
+        raise ValueError(
+            f"{path}: frontmatter 'date' is not a real calendar date: {meta['date']!r}"
+        ) from None
     slug = path.stem
     return {
         "slug": slug,
