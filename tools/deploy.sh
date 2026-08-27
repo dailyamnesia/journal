@@ -121,11 +121,22 @@ BUILD_DIR=""
 # plain `rm -rf`) is needed for $BUILD_SRC specifically, since a linked
 # worktree is also registered under this repo's own `.git/worktrees/` —
 # deleting just the directory leaves that registration behind as a
-# perpetually "prunable" entry instead of actually cleaning up.
+# perpetually "prunable" entry instead of actually cleaning up. Needs
+# `--force` twice, not once: a single `--force` still refuses to remove a
+# *locked* worktree ("cannot remove a locked working tree") — nothing in
+# this script locks $BUILD_SRC itself, but an external actor can (an
+# operator inspecting a stuck deploy, backup/AV software scanning /tmp), and
+# that failure was silently swallowed by the `2>/dev/null`, falling through
+# to the `rm -rf` fallback — which deletes the directory but never the
+# `.git/worktrees/` registration, leaking it exactly the way a plain
+# `rm -rf` alone always did. Reproduced directly: locking a real linked
+# worktree, then running this exact fallback line, left the directory gone
+# but the registration listed forever after by `git worktree list`;
+# `--force --force` removes both.
 cleanup() {
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
-  git worktree remove --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
+  git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
   rm -rf "$BUILD_DIR"
 }
 trap cleanup EXIT
