@@ -165,7 +165,21 @@ echo "== syncing content to $LIVE_PUBLIC =="
 # range of interrupt timings; --delete-delay queues all deletions and
 # only applies them after every file has finished copying, so the same
 # interruption left the old (still-valid) file in place every time.
-sudo rsync -a --delete-delay "$BUILD_DIR/" "$LIVE_PUBLIC/"
+# Two ordered passes, not one: rsync transfers files in the order it walks
+# the source tree (top-level entries alphabetically, before recursing into
+# subdirectories), so a single rsync across the whole tree can write
+# index.html/feed.xml — already updated to link a brand-new post — before
+# that post's own page has been copied into posts/, leaving a live 404
+# behind a link the homepage/feed itself just started advertising, for
+# however long the transfer takes. --delete-delay above only defers
+# *deletions* to the end of the transfer; it's a different race and doesn't
+# help here. Reproduced directly: a scratch rsync of a large new post file
+# throttled with --bwlimit showed the new index.html (linking the new post)
+# already live while the post file itself didn't exist yet, for the whole
+# multi-second transfer. Posts go out first and finish completely; only
+# then does the second pass publish the top-level pages that link to them.
+sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
+sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
 RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
