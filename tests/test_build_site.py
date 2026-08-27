@@ -407,6 +407,22 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_empty_required_key_value_names_the_file(self):
+        # A required key that's *present* but left blank (e.g. "date:" with
+        # nothing after the colon -- a plausible copy-the-template typo) is
+        # just as broken as the key being missing outright, and must raise
+        # the same named-file error rather than silently parsing as an empty
+        # string that then corrupts sorting, the rendered post date, and the
+        # feed's <updated> timestamp (which became the malformed
+        # "T00:00:00Z", missing the date entirely).
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text('---\ntitle: Something\ndate:\n---\nBody with a blank date.\n', encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("date", str(ctx.exception))
+
     def test_uncommitted_file_gets_sentinel_commit_time(self):
         # A file outside this repo's worktree can't be resolved by `git log`
         # (exactly what's true of a just-written, not-yet-committed post at

@@ -125,7 +125,11 @@ def parse_post(path):
         key, _, value = line.partition(":")
         meta[key.strip()] = value.strip().strip('"')
     for required in ("title", "date"):
-        if required not in meta:
+        # A key present but left blank (e.g. "date:" with nothing after it)
+        # is just as broken as the key being absent -- `not in meta` alone
+        # missed it, letting an empty string reach the rendered post and a
+        # malformed feed <updated> timestamp instead of failing here.
+        if not meta.get(required):
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     slug = path.stem
     return {
