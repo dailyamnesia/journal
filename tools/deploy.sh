@@ -69,22 +69,42 @@ if [ "$LOCAL_REV" != "$REMOTE_REV" ]; then
   exit 1
 fi
 
-# Export the exact verified commit right now, before either test suite runs:
-# the two suites together take upwards of 55 seconds, and until this export
-# existed, nothing re-checked git state between this point and the "== building
-# site ==" step below, which read source files straight from this live
-# checkout. build_site.py derives every source path (POSTS_DIR, CHARTER_PATH,
-# STATIC_DIR) from its own `__file__`, so building the exported copy instead
-# makes the deployed content immune to anything that happens to this live
-# checkout for the rest of the script's run, rather than merely narrowing the
-# window with a re-check that would itself still race the build's own file
-# reads. Reproduced directly: a scratch harness matching this
-# check-then-sleep-then-build shape exactly shipped a real uncommitted edit
-# made during the simulated test-suite window when building straight from the
-# live tree; building from a `git archive` export of the just-verified commit
+# Check out the exact verified commit right now, before either test suite
+# runs: the two suites together take upwards of 55 seconds, and until this
+# checkout existed, nothing re-checked git state between this point and the
+# "== building site ==" step below, which read source files straight from
+# this live checkout. build_site.py derives every source path (POSTS_DIR,
+# CHARTER_PATH, STATIC_DIR) from its own `__file__`, so building the checked-
+# out copy instead makes the deployed content immune to anything that happens
+# to this live checkout for the rest of the script's run, rather than merely
+# narrowing the window with a re-check that would itself still race the
+# build's own file reads. Reproduced directly: a scratch harness matching
+# this check-then-sleep-then-build shape exactly shipped a real uncommitted
+# edit made during the simulated test-suite window when building straight
+# from the live tree; building from a pinned copy of the just-verified commit
 # instead left the edit out, even though `git status` still showed it
-# afterward. BUILD_SRC is set up alongside BUILD_DIR's own cleanup below,
-# since both are temp dirs this script owns for the rest of its run.
+# afterward.
+#
+# This has to be a real `git worktree add`, not a `git archive | tar -x`
+# export (the first version of this fix) — an archive has no `.git` at all,
+# and build_site.py's `_first_commit_time()` shells out to `git log --follow`
+# with `cwd=REPO_ROOT` to break ties between same-date posts. Against an
+# archive, every single post silently hits the `CalledProcessError` fallback
+# (`UNCOMMITTED_SENTINEL`, meant only for a genuinely new, not-yet-committed
+# post) with no error surfaced anywhere, so *every* same-date group's real
+# chronological order collapsed into the initial glob's plain alphabetical
+# order instead, on every full rebuild — silently reordering the entire
+# site's history, not just new posts. A linked worktree keeps a `.git` file
+# pointing back at this repo's real object database, so `git log` still
+# works correctly, while still giving its own independent working directory
+# and index — editing a file in this live checkout does not touch a linked
+# worktree's copy of it. Confirmed directly: `_first_commit_time()` returned
+# the sentinel for every post when pointed at a `git archive` export, and the
+# real, correct timestamp when pointed at a `git worktree add --detach`
+# checkout of the identical commit; a live edit made to this checkout after
+# creating the worktree left the worktree's own file untouched. BUILD_SRC is
+# set up alongside BUILD_DIR's own cleanup below, since both are temp
+# directories/worktrees this script owns for the rest of its run.
 BUILD_SRC="$(mktemp -d)"
 BUILD_DIR=""
 # A bare `trap 'rm -rf "$BUILD_DIR"' EXIT` doesn't wait for a still-running
@@ -97,20 +117,38 @@ BUILD_DIR=""
 # left `sudo rsync` running detached, throwing "file has vanished" for every
 # not-yet-opened file, silently landing a partial deploy with no FAILED
 # message. `pkill -P $$` plus `wait` ensures any child (sudo, and whatever it
-# spawns) is actually dead before cleanup runs.
+# spawns) is actually dead before cleanup runs. `git worktree remove` (not a
+# plain `rm -rf`) is needed for $BUILD_SRC specifically, since a linked
+# worktree is also registered under this repo's own `.git/worktrees/` —
+# deleting just the directory leaves that registration behind as a
+# perpetually "prunable" entry instead of actually cleaning up.
 cleanup() {
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
-  rm -rf "$BUILD_SRC" "$BUILD_DIR"
+  git worktree remove --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
+  rm -rf "$BUILD_DIR"
 }
 trap cleanup EXIT
-git archive "$LOCAL_REV" | tar -x -C "$BUILD_SRC"
+git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"
 
+# Both suites run against $BUILD_SRC, not this live checkout, for the same
+# reason the build step below does: tests/test_build_site.py and
+# tests/server.test.js each resolve the module under test relative to their
+# own file location (Path(__file__).resolve() / require('../tools/server.js')),
+# so discovering them from the live tree exercises the live tree's code, not
+# the $BUILD_SRC snapshot of $LOCAL_REV that actually gets built and shipped a
+# few lines down — the identical live-tree race the git-archive export above
+# was introduced to close, just one step earlier. Reproduced directly: a
+# scratch commit with a real, test-catchable bug, archived via `git archive`
+# the same way, then live-tree-patched to look correct before running
+# `python3 -m unittest discover -s tests` from the repo root — the suite
+# reported OK while the archived commit (the one that gets built and shipped)
+# still had the bug.
 echo "== running python tests =="
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s "$BUILD_SRC/tests"
 
 echo "== running node tests =="
-node --test tests/server.test.js
+node --test "$BUILD_SRC/tests/server.test.js"
 
 BUILD_DIR="$(mktemp -d)"
 
