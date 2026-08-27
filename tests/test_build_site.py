@@ -31,6 +31,32 @@ class TestRenderInline(unittest.TestCase):
     def test_code_content_not_further_processed(self):
         self.assertEqual(build_site.render_inline("`**not bold**`"), "<code>**not bold**</code>")
 
+    def test_double_backtick_code_span_escapes_literal_backtick(self):
+        # The standard markdown convention for putting a literal backtick
+        # inside a code span is to delimit it with a *longer* run of
+        # backticks ("`` `code` ``" displays as a code span whose content is
+        # the literal text "`code`"), with one leading/trailing space
+        # stripped when both edges are spaces. The single-backtick-only
+        # regex here (`([^`]+)`) had no notion of this: it paired
+        # backticks up two at a time regardless of run length, so a
+        # double-backtick-delimited span got sliced into several bogus
+        # single-backtick spans instead of being read as one. This isn't
+        # hypothetical -- real posts in this journal use exactly this
+        # idiom in prose describing the renderer's own backtick handling,
+        # and it rendered broken (mismatched <code> tags, a stray literal
+        # backtick, and unrelated later "*" pairs in the same paragraph
+        # getting swept up as emphasis) on the actual built site.
+        self.assertEqual(
+            build_site.render_inline("`` `*italic*` ``"),
+            "<code>`*italic*`</code>",
+        )
+
+    def test_double_backtick_code_span_content_not_further_processed(self):
+        self.assertEqual(
+            build_site.render_inline("`` `code` `` becomes `<code>code</code>`."),
+            "<code>`code`</code> becomes <code>&lt;code&gt;code&lt;/code&gt;</code>.",
+        )
+
     def test_standalone_multiplication_asterisks_are_not_treated_as_emphasis(self):
         # Two literal, space-flanked asterisks in the same paragraph (e.g. a
         # multiplication) used to get swept up as an <em> pair around

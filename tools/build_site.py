@@ -148,18 +148,76 @@ def parse_charter(path=CHARTER_PATH):
     return title_line[2:].strip(), body.strip("\n")
 
 
+def _stash_code_spans(text):
+    """Replace each code span with a \\x00N\\x00 placeholder, returning the
+    placeholder-substituted text and the list of stashed span contents.
+
+    A code span opens with a run of one or more backticks and closes at the
+    next run of *exactly* the same length -- the standard markdown escape
+    for putting a literal backtick inside a code span is to delimit it with
+    a longer run (e.g. "`` `code` ``" is a code span whose content is the
+    literal text "`code`"), with one leading/trailing space trimmed when
+    both edges are a space and the content isn't all spaces (so the
+    delimiter can visually separate from an inner leading/trailing
+    backtick). A plain `re.sub(r"`([^`]+)`", ...)` pairing single backticks
+    two at a time has no notion of run length: it sliced a
+    double-backtick-delimited span into several bogus single-backtick
+    spans instead of reading it as one -- e.g. render_inline("`` `code`
+    ``") used to produce "`<code> </code>code<code> </code>`" (a leaked
+    literal backtick and mismatched spans) instead of a single
+    "<code>`code`</code>". This isn't hypothetical: real posts in this
+    journal use the double-backtick idiom in prose describing the
+    renderer's own backtick handling, and it rendered broken -- including
+    unrelated "*" characters later in the same paragraph getting swept up
+    as emphasis, since the stray leftover backtick from the botched pairing
+    left the code-span stash unable to protect the rest of the line.
+    An opening run with no same-length closing run later in the text is
+    left as literal backticks, same as a single unmatched backtick always
+    was.
+    """
+    code_spans = []
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "`":
+            out.append(text[i])
+            i += 1
+            continue
+        run_start = i
+        while i < n and text[i] == "`":
+            i += 1
+        run_len = i - run_start
+        content_start = i
+        k = content_start
+        close_start = close_end = None
+        while k < n:
+            if text[k] == "`":
+                close_run_start = k
+                while k < n and text[k] == "`":
+                    k += 1
+                if k - close_run_start == run_len:
+                    close_start, close_end = close_run_start, k
+                    break
+            else:
+                k += 1
+        if close_start is None:
+            out.append(text[run_start:content_start])
+            continue
+        content = text[content_start:close_start]
+        if len(content) >= 2 and content[0] == " " and content[-1] == " " and content.strip(" "):
+            content = content[1:-1]
+        code_spans.append(content)
+        out.append(f"\x00{len(code_spans) - 1}\x00")
+        i = close_end
+    return "".join(out), code_spans
+
+
 def render_inline(text):
     text = html.escape(text)
 
     # Code spans are stashed out and restored after bold/italic run, so
     # e.g. `*not italic*` isn't itself reinterpreted as markdown.
-    code_spans = []
-
-    def stash(match):
-        code_spans.append(match.group(1))
-        return f"\x00{len(code_spans) - 1}\x00"
-
-    text = re.sub(r"`([^`]+)`", stash, text)
+    text, code_spans = _stash_code_spans(text)
     # The captured text must start and end on a non-space, non-"*"
     # character (a literal " * " used as multiplication, with a second
     # unrelated "*" later in the same paragraph, was otherwise swept up as
