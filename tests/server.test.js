@@ -579,3 +579,102 @@ test('server: concurrent requests for a large file do not each buffer the whole 
     `expected RSS growth to stay well under 70MB with ${N} unread requests for a 15MB file, got ${deltaMb.toFixed(1)}MB (looks like the whole file is being buffered per request)`
   );
 });
+
+function getWithTimeout(port, urlPath, timeoutMs) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const req = http.get({ host: '127.0.0.1', port, path: urlPath, timeout: timeoutMs }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        body: Buffer.concat(chunks).toString(),
+        ms: Date.now() - start,
+        timedOut: false,
+      }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ status: null, body: '', ms: Date.now() - start, timedOut: true }); });
+    req.on('error', () => resolve({ status: null, body: '', ms: Date.now() - start, timedOut: true }));
+  });
+}
+
+test('server: a FIFO in publicDir does not stall unrelated requests by exhausting the fs thread pool', async (t) => {
+  // Regression test: fs.open (used to open every requested file) runs on
+  // libuv's thread pool, which defaults to just 4 worker threads shared by
+  // every async fs call this whole process makes -- including ones for
+  // completely unrelated requests. Opening a regular file never blocks that
+  // worker for long, but opening a FIFO (a named pipe) with plain 'r'/
+  // O_RDONLY blocks at the kernel level until some other process opens the
+  // other end for writing -- if nothing ever does, that worker is gone
+  // forever. A FIFO doesn't need to be attacker-placed to exist in
+  // publicDir; a stray one left behind by some other tool is enough. Four
+  // concurrent requests for it exhaust the entire default-sized pool, and
+  // then *every* other request site-wide -- for ordinary, unrelated files --
+  // stalls waiting for a free worker that never comes, since the ones
+  // holding the pool never return either. That's a full-site DoS from a
+  // single unusual file, triggered by ordinary concurrent requests, no race
+  // or symlink needed.
+  //
+  // Fixed by opening with O_NONBLOCK: a no-op for regular files (the
+  // fstat-based isFile() check below still runs exactly as before), but it
+  // makes opening a FIFO return immediately regardless of whether a writer
+  // is present, so fstat's isFile() check (false for a FIFO) routes it to
+  // the ordinary 404 path instead of blocking a worker forever.
+  const dir = makePublicDir(t);
+  const { execFileSync } = require('node:child_process');
+  const fifoPath = path.join(dir, 'blocker.html');
+  execFileSync('mkfifo', [fifoPath]);
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  // Match whatever pool size is actually configured, defaulting to libuv's
+  // own default of 4, so this reliably saturates the pool regardless of
+  // environment.
+  const poolSize = Number(process.env.UV_THREADPOOL_SIZE) || 4;
+
+  try {
+    // Fire off enough concurrent requests for the FIFO to occupy every
+    // thread-pool worker with a blocking open(). Deliberately not awaited:
+    // pre-fix, these never resolve on their own (nothing ever opens the
+    // other end of the FIFO for writing) until the unblock step below.
+    const fifoRequests = Array.from({ length: poolSize }, () =>
+      getWithTimeout(port, '/blocker.html', 10000).catch(() => {})
+    );
+
+    // Give the FIFO opens a moment to actually reach the blocking syscall in
+    // their thread-pool workers before piling on the "innocent" request.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // An ordinary request for an ordinary file, with nothing to do with the
+    // FIFO. Bounded well below the fifoRequests' own 10s timeout: post-fix
+    // this resolves in milliseconds; pre-fix, the pool is fully occupied by
+    // blocked FIFO opens and this has no free worker to run on, so it never
+    // completes within the bound.
+    const result = await getWithTimeout(port, '/index.html', 3000);
+
+    assert.equal(
+      result.timedOut,
+      false,
+      `an unrelated request for an ordinary file must not stall behind ${poolSize} concurrent requests for a FIFO (thread pool exhaustion)`
+    );
+    assert.equal(result.status, 200);
+    assert.match(result.body, /home/);
+
+    await Promise.all(fifoRequests);
+  } finally {
+    // Unblock any still-pending FIFO opens (this matters most when the
+    // assertions above throw against pre-fix code, where the fifoRequests
+    // above never resolve on their own): open the other end of the FIFO for
+    // writing from a genuinely separate OS process, not through this
+    // process's own -- possibly still fully occupied -- thread pool.
+    try {
+      execFileSync('sh', ['-c', `printf x > ${JSON.stringify(fifoPath)}`], { timeout: 5000 });
+    } catch {
+      // Best-effort: if this process's fd table or the shell itself is in a
+      // bad state, there's nothing more useful to do here than move on.
+    }
+  }
+});

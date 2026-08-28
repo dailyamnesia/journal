@@ -120,7 +120,28 @@ function createRequestHandler(publicDir) {
       // through, since fs.open (like fs.createReadStream before it)
       // re-resolves any symlink in the path it's given at the moment it
       // runs.
-      fs.open(real, 'r', (openErr, fd) => {
+      // O_NONBLOCK (not just 'r'/O_RDONLY) matters here for a reason that has
+      // nothing to do with regular files: opening a FIFO for reading blocks
+      // at the kernel level until some process opens the other end for
+      // writing -- forever, if nothing ever does. fs.open runs on libuv's
+      // thread pool, which defaults to a mere 4 worker threads shared by
+      // *every* async fs call this whole process makes. A single request for
+      // a path that happens to be a FIFO (e.g. a stray named pipe left in
+      // publicDir by some other tool) ties up one worker indefinitely; four
+      // concurrent requests for it exhaust the entire pool, and every other
+      // request site-wide -- for completely unrelated, ordinary files --
+      // then stalls waiting for a free worker that never comes, since the
+      // ones holding the pool never return. Confirmed directly: four
+      // concurrent requests to a real FIFO placed in publicDir left a
+      // simultaneous, unrelated request for a plain file hanging past an 8s
+      // timeout with zero server-side involvement of its own. O_NONBLOCK
+      // makes the open return immediately regardless of what's on the other
+      // end -- a no-op for regular files (the vast majority of requests),
+      // but it turns what would otherwise be an indefinite block on a FIFO
+      // into an immediate open whose fstat below (stats.isFile()) then
+      // correctly and quickly routes it to the existing 404 path along with
+      // every other non-regular-file type.
+      fs.open(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK, (openErr, fd) => {
         if (closed) {
           if (!openErr) fs.close(fd, () => {});
           return;
