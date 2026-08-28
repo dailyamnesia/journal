@@ -476,6 +476,21 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("date", str(ctx.exception))
 
+    def test_unquoted_value_ending_in_a_literal_quote_mark_is_not_mangled(self):
+        # An unquoted title that happens to end with a quote character (e.g.
+        # a quoted phrase the author didn't wrap the whole title in) used to
+        # lose that trailing quote: value.strip('"') strips any number of
+        # matching characters from each end independently, not just a
+        # balanced wrapping pair, so "He said \"no\"" became "He said \"no.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-quoted.md"
+            path.write_text(
+                '---\ntitle: He said "no"\ndate: 2026-01-01\n---\nBody.\n',
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], 'He said "no"')
+
     def test_uncommitted_file_gets_sentinel_commit_time(self):
         # A file outside this repo's worktree can't be resolved by `git log`
         # (exactly what's true of a just-written, not-yet-committed post at

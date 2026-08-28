@@ -124,7 +124,10 @@ def parse_post(path):
     meta = {}
     for line in frontmatter.splitlines():
         key, _, value = line.partition(":")
-        meta[key.strip()] = value.strip().strip('"')
+        value = value.strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+        meta[key.strip()] = value
     for required in ("title", "date"):
         # A key present but left blank (e.g. "date:" with nothing after it)
         # is just as broken as the key being absent -- `not in meta` alone
