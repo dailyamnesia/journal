@@ -262,10 +262,23 @@ start-limit-hit after repeated restarts within 10s), recover with:
 # restart needed" branch and leaves the service down — and since the diff
 # keeps reporting "unchanged" on every later run too, re-running deploy.sh
 # can never bring it back on its own; only a manual `systemctl start` can.
+#
+# Diffed and copied from $BUILD_SRC, not the live checkout's own
+# tools/server.js: everything else in this script (the test suites, the
+# site build) deliberately reads from the pinned $BUILD_SRC worktree of
+# $LOCAL_REV specifically so a live-tree edit made during the ~55+ seconds
+# the test suites and build take can't reach production — this step used a
+# bare relative path resolved against $REPO_ROOT instead, silently
+# bypassing that entire protection for the one file whose correctness
+# actually restarts a live service. Reproduced directly: a scratch repo
+# with a committed, worktree-checked-out "VERSION_A" and a live-tree-only,
+# uncommitted "VERSION_B" — the old `tools/server.js` (relative, cwd
+# $REPO_ROOT) resolved to VERSION_B, the untested edit, not VERSION_A, the
+# one both test suites just verified.
 SERVER_CHANGED=false
-if ! sudo diff -q tools/server.js "$LIVE_SERVER" >/dev/null 2>&1; then
+if ! sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>&1; then
   echo "== server.js changed, deploying =="
-  sudo cp tools/server.js "$LIVE_SERVER"
+  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_SERVER"
   sudo chown webapp:webapp "$LIVE_SERVER"
   SERVER_CHANGED=true
 fi
