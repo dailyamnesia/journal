@@ -242,53 +242,60 @@ def _stash_code_spans(text):
     return "".join(out), code_spans
 
 
+# Bold/italic matching, shared between render_inline() (HTML output) and
+# _summary() (plain-text feed/description output) so the two can't drift on
+# what counts as real emphasis markup vs. a literal "*" character -- session
+# 130 found _summary() had drifted onto a blind `[`*]` character strip
+# instead, corrupting literal asterisks/backticks (including inside code
+# spans) rather than only removing real markdown delimiters.
+#
+# The captured text must start and end on a non-space, non-"*"
+# character (a literal " * " used as multiplication, with a second
+# unrelated "*" later in the same paragraph, was otherwise swept up as
+# emphasis -- e.g. "3 * 4 * 5 = 60" rendered "4" in <em> tags for no
+# reason; excluding "*" from the boundary too, not just whitespace,
+# keeps back-to-back asterisks like "2 ** 3 ** 4" from being paired
+# via their inner single "*" characters instead).
+#
+# The middle of a **bold** match allows a nested *italic* run (e.g.
+# "**bold *and italic* together**") but never a bare "**" (so it can't
+# cross into an unrelated bold delimiter or a "**" used as a literal
+# exponent operator) -- bold used to exclude "*" everywhere in the
+# middle, not just at the boundary, so any bold text containing a
+# nested italic run failed to match at all and its "**" delimiters
+# leaked into the page as literal asterisks instead of becoming
+# <strong>.
+#
+# Any "*" allowed in the middle must belong to such a self-contained,
+# already-paired *...* run, never a single unmatched "*" -- an earlier
+# version allowed any lone "*" there (matching "\*(?!\*)" one character
+# at a time, with no requirement that it pair up with anything). A bold
+# span with a genuinely unpaired "*" in its middle -- e.g. from a
+# literal, space-free multiplication like "2*a" -- still matched as
+# bold, leaving that "*" un-rendered inside the new <strong>...</strong>
+# text. The later, separate italic pass then still saw that raw "*" as
+# an ordinary character and was free to pair it with an unrelated "*"
+# later in the same paragraph, including one that came after the
+# closing "</strong>" -- producing crossing, invalid markup instead of
+# well-formed nested or sibling elements:
+# render_inline("**2*a***ba*") used to render the mismatched
+# '<strong>2<em>a</strong></em>ba*' (an <em> that opens before
+# </strong> and closes after it). Requiring every inner "*" to be part
+# of its own matched pair closes that gap: the stray "*a*" no longer
+# matches as bold's middle at all, leaving well-formed output instead.
+_ITALIC_INNER = r"\*[^*\s](?:[^*]*[^*\s])?\*"
+_BOLD_RE = re.compile(r"\*\*([^*\s](?:(?:[^*]|" + _ITALIC_INNER + r")*[^*\s])?)\*\*")
+_ITALIC_RE = re.compile(r"\*([^*\s](?:[^*]*[^*\s])?)\*")
+
+
 def render_inline(text):
     text = html.escape(text)
 
     # Code spans are stashed out and restored after bold/italic run, so
     # e.g. `*not italic*` isn't itself reinterpreted as markdown.
     text, code_spans = _stash_code_spans(text)
-    # The captured text must start and end on a non-space, non-"*"
-    # character (a literal " * " used as multiplication, with a second
-    # unrelated "*" later in the same paragraph, was otherwise swept up as
-    # emphasis -- e.g. "3 * 4 * 5 = 60" rendered "4" in <em> tags for no
-    # reason; excluding "*" from the boundary too, not just whitespace,
-    # keeps back-to-back asterisks like "2 ** 3 ** 4" from being paired
-    # via their inner single "*" characters instead).
-    #
-    # The middle of a **bold** match allows a nested *italic* run (e.g.
-    # "**bold *and italic* together**") but never a bare "**" (so it can't
-    # cross into an unrelated bold delimiter or a "**" used as a literal
-    # exponent operator) -- bold used to exclude "*" everywhere in the
-    # middle, not just at the boundary, so any bold text containing a
-    # nested italic run failed to match at all and its "**" delimiters
-    # leaked into the page as literal asterisks instead of becoming
-    # <strong>.
-    #
-    # Any "*" allowed in the middle must belong to such a self-contained,
-    # already-paired *...* run, never a single unmatched "*" -- an earlier
-    # version allowed any lone "*" there (matching "\*(?!\*)" one character
-    # at a time, with no requirement that it pair up with anything). A bold
-    # span with a genuinely unpaired "*" in its middle -- e.g. from a
-    # literal, space-free multiplication like "2*a" -- still matched as
-    # bold, leaving that "*" un-rendered inside the new <strong>...</strong>
-    # text. The later, separate italic pass then still saw that raw "*" as
-    # an ordinary character and was free to pair it with an unrelated "*"
-    # later in the same paragraph, including one that came after the
-    # closing "</strong>" -- producing crossing, invalid markup instead of
-    # well-formed nested or sibling elements:
-    # render_inline("**2*a***ba*") used to render the mismatched
-    # '<strong>2<em>a</strong></em>ba*' (an <em> that opens before
-    # </strong> and closes after it). Requiring every inner "*" to be part
-    # of its own matched pair closes that gap: the stray "*a*" no longer
-    # matches as bold's middle at all, leaving well-formed output instead.
-    _italic_inner = r"\*[^*\s](?:[^*]*[^*\s])?\*"
-    text = re.sub(
-        r"\*\*([^*\s](?:(?:[^*]|" + _italic_inner + r")*[^*\s])?)\*\*",
-        r"<strong>\1</strong>",
-        text,
-    )
-    text = re.sub(r"\*([^*\s](?:[^*]*[^*\s])?)\*", r"<em>\1</em>", text)
+    text = _BOLD_RE.sub(r"<strong>\1</strong>", text)
+    text = _ITALIC_RE.sub(r"<em>\1</em>", text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
     return text
@@ -438,7 +445,17 @@ def _summary(body):
             break
         quoting = False
         paragraph.append(line.strip())
-    text = re.sub(r"[`*]", "", " ".join(paragraph))
+    # Reuses render_inline()'s own code-span stashing and bold/italic
+    # regexes (see the comment above _BOLD_RE) instead of the blind
+    # `re.sub(r"[`*]", "", ...)` this used to be -- that stripped *every*
+    # backtick/asterisk unconditionally, deleting literal ones (e.g. the
+    # "*" in "3 * 4 * 5") and corrupting code-span content (e.g. "`2*a`"
+    # became "2a") rather than only removing real markdown delimiters.
+    text, code_spans = _stash_code_spans(" ".join(paragraph))
+    text = _BOLD_RE.sub(r"\1", text)
+    text = _ITALIC_RE.sub(r"\1", text)
+    for i, code in enumerate(code_spans):
+        text = text.replace(f"\x00{i}\x00", code)
     if len(text) > 280:
         text = text[:280].rsplit(" ", 1)[0] + "…"
     return text

@@ -301,6 +301,29 @@ class TestSummary(unittest.TestCase):
         body = "Some `code` and **bold** and *italic* text."
         self.assertEqual(build_site._summary(body), "Some code and bold and italic text.")
 
+    def test_literal_multiplication_asterisk_is_preserved(self):
+        # Mirrors render_inline()'s own "3 * 4 * 5" protection (see the
+        # comment above _BOLD_RE): _summary() used to blindly strip every
+        # "*" character, deleting a literal one that render_markdown()
+        # correctly keeps, and leaving a double space behind.
+        body = "The trick was 3 * 4 * 5 = 60, done by hand."
+        self.assertEqual(
+            build_site._summary(body), "The trick was 3 * 4 * 5 = 60, done by hand."
+        )
+
+    def test_code_span_content_is_not_further_stripped_of_backticks_or_asterisks(self):
+        # _summary() used to run a blanket `re.sub(r"[`*]", "", ...)` over
+        # the whole paragraph, corrupting a code span's actual content
+        # (e.g. "`2*a`" losing its "*") instead of only removing the
+        # delimiters -- the same code-span-content-is-literal rule
+        # render_inline()/_stash_code_spans() already enforce.
+        body = "Computed with `2*a` style code."
+        self.assertEqual(build_site._summary(body), "Computed with 2*a style code.")
+        body2 = "Delimit a literal backtick like `` `code` `` in prose."
+        self.assertEqual(
+            build_site._summary(body2), "Delimit a literal backtick like `code` in prose."
+        )
+
     def test_truncates_long_paragraph_at_word_boundary(self):
         summary = build_site._summary("word " * 100)
         self.assertTrue(summary.endswith("…"))
