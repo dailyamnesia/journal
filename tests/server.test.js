@@ -381,6 +381,84 @@ test('server: a request that resolves to a real directory gets a clean 404, not 
   });
 });
 
+test('server: a file swapped for a directory mid-request never abandons the response', async (t) => {
+  // Regression test: the previous fix (above) rejected a direct request for
+  // a known directory via fs.stat(real, ...), but a separate fs.open of
+  // `real` still ran afterward to build the stream -- a second, later async
+  // hop with a fresh TOCTOU gap of its own. If whatever's at `real` is
+  // replaced by a directory in the window between that stat and the later
+  // open, createReadStream's 'open' event still fires (Linux allows opening
+  // a directory for reading), headers already go out as a 200, and only the
+  // subsequent read fails with EISDIR -- too late, the response is abandoned
+  // exactly like the original directory-request bug, just reached through a
+  // race instead of a direct hit. Confirmed directly against the
+  // stat-then-open code: a real separate OS process continuously toggling a
+  // path between file and directory, raced against thousands of real
+  // concurrent requests, produced abandoned responses on a real, nonzero
+  // fraction of them.
+  //
+  // Fixed by opening the file first and checking its type via fstat on the
+  // resulting file descriptor instead of the path: an already-open fd keeps
+  // referring to the same inode no matter what happens to the path
+  // afterward, so there's no later path lookup left to race.
+  const dir = makePublicDir(t);
+  const target = path.join(dir, 'racetarget.html');
+  fs.writeFileSync(target, 'stable content');
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const { spawn } = require('node:child_process');
+  const swapperScript = `
+    const fs = require('fs');
+    const target = ${JSON.stringify(target)};
+    while (true) {
+      try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
+      try { fs.writeFileSync(target, 'stable content'); } catch {}
+      try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
+      try { fs.mkdirSync(target); } catch {}
+    }
+  `;
+  const swapper = spawn(process.execPath, ['-e', swapperScript]);
+  t.after(() => swapper.kill());
+
+  // Same rationale as the symlink-swap test above: the race needs a
+  // genuinely separate OS process, not a same-event-loop loop, to reliably
+  // land inside the gap between fstat/fs.open's async hops.
+  await new Promise((r) => setTimeout(r, 100));
+
+  const attempts = 400;
+  let abandoned = 0;
+  await Promise.all(Array.from({ length: attempts }, () => new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /racetarget.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    const chunks = [];
+    let sawData = false;
+    sock.on('data', (c) => { sawData = true; chunks.push(c); });
+    sock.on('error', () => { abandoned++; resolve(); });
+    sock.on('close', () => {
+      const raw = Buffer.concat(chunks).toString();
+      // A response is "abandoned" if the connection closed after headers
+      // claimed 200 but with no body at all -- the exact failure shape.
+      if (sawData && /^HTTP\/1\.1 200/.test(raw) && !raw.includes('stable content') && !raw.includes('missing')) {
+        abandoned++;
+      }
+      resolve();
+    });
+  })));
+
+  swapper.kill();
+
+  assert.equal(
+    abandoned,
+    0,
+    `a file replaced by a directory between the type check and the stream open must never abandon the response (abandoned on ${abandoned}/${attempts} requests)`
+  );
+});
+
 test('server: a client that disconnects before the file is opened does not leak its file descriptor', async (t) => {
   // Regression test: the res.on('close', () => stream.destroy()) cleanup
   // below only gets attached after fs.realpath and fs.stat have both
