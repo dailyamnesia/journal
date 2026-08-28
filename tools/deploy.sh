@@ -134,6 +134,28 @@ BUILD_DIR=""
 # but the registration listed forever after by `git worktree list`;
 # `--force --force` removes both.
 cleanup() {
+  # Ignore further TERM/INT for the rest of cleanup, once it's started: only
+  # EXIT is trapped above, not TERM/INT themselves, so bash's default,
+  # untrapped disposition for those (immediate termination) still applies
+  # while this function is already running as the EXIT trap. A *second*
+  # TERM/INT arriving while `wait` below is still blocked on the pkill'd
+  # child (e.g. an operator who sent one signal, saw no immediate effect
+  # since rsync/git take a moment to actually exit, and sent another) kills
+  # this process outright, mid-cleanup — before `git worktree remove` or
+  # `rm -rf "$BUILD_DIR"` ever run, leaking both the temp build dir and the
+  # worktree's registration under this repo's own `.git/worktrees/` forever,
+  # even though the child itself (already signaled by the first TERM's
+  # pkill) went on to exit cleanly on its own. Reproduced directly: a scratch
+  # harness matching this exact trap-cleanup shape, sent TERM twice in
+  # quick succession (second one ~0.8s after the first, well before the
+  # pkill'd child's own ~3s graceful-shutdown delay), never reached its
+  # `rm -rf` line at all — the marker directory that line removes was still
+  # sitting there afterward, untouched, with the child's own cleanup file
+  # inside it. Adding this ignore-trap as cleanup's first line, then rerunning
+  # the identical double-TERM timing, let `wait` block until the child
+  # actually finished and cleanup run to completion every time — the marker
+  # directory was gone afterward, as intended.
+  trap '' TERM INT
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
   git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
