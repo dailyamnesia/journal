@@ -266,6 +266,50 @@ if [ "$(ps -o ppid= -p $$ | tr -d ' ')" = "1" ]; then
   exit 1
 fi
 
+# The reparented-to-init check just above only catches the supervisor process
+# itself dying. It says nothing about whether the lock it's still holding
+# actually means anything, because flock(2) locks an inode, not a path:
+# `rm -f "$LOCKFILE"` followed by anything at all recreating that same path —
+# most plausibly an operator who sees "another deploy.sh is already running",
+# assumes it's a stale lock left over from a crash, and clears it "by hand"
+# (the identical persona this script already assumes for the reparented-
+# supervisor case above and the locked-$BUILD_SRC-worktree case in cleanup())
+# — leaves the still-very-much-alive supervisor holding a flock on an
+# unlinked, orphaned inode that nothing can ever contend against again, while
+# a brand new `flock -n --close -E 99 "$LOCKFILE" ...` opens a *different*
+# inode at that same path and succeeds immediately. A second deploy.sh then
+# runs fully concurrently with this one — the exact two-racing-rsyncs
+# scenario fix #1 (top of this file) exists to prevent, just reached by
+# swapping out the lock file itself instead of by fd inheritance. Reproduced
+# directly: held a real `flock --close` lock on a scratch file, then `rm -f`
+# + `touch`'d that same path while the holder was still alive and sleeping
+# mid-lock — a second, independent `flock -n` on that path acquired
+# instantly, confirmed racing against the first. `readlink` on the original
+# holder's own fd for that file (found via /proc/<holder-pid>/fd/) reported
+# the target as "$LOCKFILE (deleted)" the exact moment the path was replaced
+# — the standard Linux signal that an fd's inode was unlinked out from under
+# it, even though an unrelated new file now sits at the same name. Since
+# parent_is_flock already confirmed $PPID is genuinely the flock supervisor,
+# and it still holds the lock fd open, scanning its /proc/$PPID/fd for the
+# one pointing at $LOCKFILE and checking for that "(deleted)" suffix catches
+# exactly this. Re-running the identical reproduction with this check in
+# place correctly refused the second invocation instead of letting it
+# proceed.
+lock_file_was_replaced() {
+  local target fd
+  for fd in "/proc/$PPID/fd/"*; do
+    target="$(readlink "$fd" 2>/dev/null || true)"
+    if [ "$target" = "$LOCKFILE (deleted)" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+if lock_file_was_replaced; then
+  echo "FAILED: this deploy's lock file ($LOCKFILE) was deleted and replaced while this deploy was running — it no longer protects against a concurrent deploy; refusing to sync." >&2
+  exit 1
+fi
+
 echo "== syncing content to $LIVE_PUBLIC =="
 # --delete-delay, not plain --delete: plain --delete defaults to
 # delete-during, which removes each now-extraneous destination file as
