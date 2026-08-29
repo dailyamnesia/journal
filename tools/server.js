@@ -190,7 +190,28 @@ function createRequestHandler(publicDir) {
           // respects the response's backpressure instead, keeping memory
           // bounded to a small number of chunks regardless of file size or
           // concurrency.
-          const ext = path.extname(filePath);
+          // Content-Type is picked from `real` -- the realpath-resolved,
+          // already-open-fd-verified path -- not from `filePath`, the
+          // original, unresolved request path. The two only differ when the
+          // final path component is itself a symlink: a symlink named e.g.
+          // "notes.html" can point at a plain "notes.txt" also inside
+          // publicDir (passing the fix-#8 containment check, since the
+          // target never leaves publicDir), and picking the extension from
+          // the symlink's own name rather than the file it actually points
+          // to served that file's bytes with Content-Type: text/html
+          // regardless of what the file was ever meant to be served as -- a
+          // browser renders and executes that response, turning any file
+          // whose contents aren't attacker-locked-down into a stored-XSS
+          // payload the moment a same-directory symlink gives it a ".html"
+          // name, even though requesting the identical bytes by their real
+          // name already safely fell back to application/octet-stream.
+          // Confirmed directly: a symlink "evil.html" -> "notes.txt" (both
+          // containing "<script>alert(document.domain)</script>") served
+          // that script as text/html through the symlink, application/
+          // octet-stream when requested as /notes.txt directly. Keying off
+          // `real` makes Content-Type reflect the file actually being
+          // streamed, not the name used to reach it.
+          const ext = path.extname(real);
           res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
           stream = fs.createReadStream(null, { fd });
           if (closed) {

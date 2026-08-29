@@ -270,6 +270,46 @@ test('server: a symlinked directory inside publicDir does not expose its target 
   });
 });
 
+test('server: a symlink does not let its own extension override the Content-Type of its target', async (t) => {
+  // Regression test: the realpath-containment check (fix #8) verifies a
+  // symlink's *target* stays inside publicDir, but the Content-Type header
+  // used to be picked from `path.extname(filePath)` -- the original,
+  // unresolved request path -- rather than from `real`, the realpath the
+  // rest of the handler already resolved, verified, and is about to stream.
+  // A symlink named "evil.html" pointing at a plain "notes.txt" (both safely
+  // inside publicDir, so the containment check passes) served the exact same
+  // bytes with Content-Type: text/html instead of the application/octet-
+  // stream a direct request for notes.txt itself gets. A browser renders and
+  // executes an application/octet-stream response as inert data, but renders
+  // and executes a text/html one -- so this let a same-directory symlink
+  // alone turn any file whose contents aren't attacker-locked-down (a stray
+  // upload, a log file, anything) into a stored-XSS payload, purely by
+  // giving it a ".html"-named symlink, with no path-boundary violation at
+  // all. Confirmed directly: requesting a file containing
+  // "<script>alert(document.domain)</script>" through such a symlink
+  // returned Content-Type: text/html; requesting the identical bytes by
+  // their real name returned application/octet-stream, both before this fix.
+  const dir = makePublicDir(t);
+  const payload = '<script>alert(document.domain)</script>';
+  fs.writeFileSync(path.join(dir, 'notes.txt'), payload);
+  fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'evil.html'));
+
+  await withServer(dir, async (port) => {
+    const direct = await get(port, '/notes.txt');
+    assert.equal(direct.status, 200);
+    assert.equal(direct.contentType, 'application/octet-stream');
+
+    const viaSymlink = await get(port, '/evil.html');
+    assert.equal(viaSymlink.status, 200);
+    assert.equal(viaSymlink.body, payload);
+    assert.equal(
+      viaSymlink.contentType,
+      'application/octet-stream',
+      `expected the symlink's target (a .txt file) to determine Content-Type, not the symlink's own ".html" name, got ${viaSymlink.contentType}`
+    );
+  });
+});
+
 test('server: a symlink swapped mid-request cannot bypass the realpath containment check', async (t) => {
   // Regression test: the realpath-containment check above resolves and
   // verifies `real`, but the stream that actually gets sent to the client
