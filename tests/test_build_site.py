@@ -672,6 +672,20 @@ class TestBuildIncludesMetaDescriptions(unittest.TestCase):
         self.assertIn('<meta name="description" content=', charter)
         self.assertIn('<meta name="description" content=', post)
 
+    def test_404_page_has_a_description_too(self):
+        # index/post/charter each pass page() a description; the 404 page's
+        # own page() call (build_site.build()'s not_found_body branch) never
+        # got one, so it silently lacks the <meta name="description"> tag
+        # every other page in the site carries -- the same "every page gets
+        # X" consistency this project already enforces for the favicon link
+        # (see TestBuildIncludesFavicon, which explicitly checks 404.html
+        # too) was never extended to the description meta tag.
+        with tempfile.TemporaryDirectory() as d:
+            build_site.build(d)
+            not_found = (Path(d) / "404.html").read_text(encoding="utf-8")
+
+        self.assertIn('<meta name="description" content=', not_found)
+
 
 class TestBuildIncludesCharterPage(unittest.TestCase):
     def test_charter_html_built_and_linked(self):

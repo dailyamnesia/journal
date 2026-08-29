@@ -654,7 +654,10 @@ def build(out_dir):
   <h1>Not found</h1>
   <p><a href="/">Back to Daily Amnesia</a></p>
   </main>"""
-    (out_dir / "404.html").write_text(page("Not found", not_found_body), encoding="utf-8")
+    not_found_description = "This page doesn't exist. Back to Daily Amnesia."
+    (out_dir / "404.html").write_text(
+        page("Not found", not_found_body, description=not_found_description), encoding="utf-8"
+    )
 
     print(f"built {len(posts)} post(s) into {out_dir}/")
 
