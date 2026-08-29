@@ -41,7 +41,30 @@ LOCKFILE=/tmp/dailyamnesia-deploy.lock
 # lock fd is held by nobody once the script exits, orphaned grandchild or
 # not, and a concurrent second invocation is still correctly rejected while a
 # first is genuinely still running.
-if [ "${DAILYAMNESIA_DEPLOY_LOCKED:-}" != 1 ]; then
+#
+# The boolean sentinel above isn't trusted on its own: it's an ordinary
+# environment variable, inherited from whatever process invokes this script,
+# not something only this script's own re-exec can set. If it's already `1`
+# in the caller's environment for any unrelated reason (most plausibly: an
+# operator who was poking at the guarded body by hand while debugging a
+# stuck deploy — exactly the persona already assumed elsewhere in this
+# script — and still has it exported in that same shell afterward), a
+# perfectly ordinary direct invocation skips the `flock` line entirely,
+# never creates $LOCKFILE, and runs the rest of the script completely
+# unlocked, defeating fix #1 above outright. Reproduced directly: two
+# scratch invocations run concurrently with `DAILYAMNESIA_DEPLOY_LOCKED=1`
+# pre-exported both entered the guarded body at once, with no lock file ever
+# created; without the var pre-set, the same two concurrent invocations
+# correctly serialized, one rejected with "already running". Requiring the
+# immediate parent to actually be `flock` (checked fresh via `ps`, same
+# freshness discipline as the reparented-supervisor check further down, not
+# a cached value) closes it: re-running the identical pre-exported-var
+# reproduction with this check in place made both invocations fall through
+# to the real `flock` line, and the second was correctly rejected.
+parent_is_flock() {
+  [ "$(ps -o comm= -p "$PPID" 2>/dev/null)" = "flock" ]
+}
+if [ "${DAILYAMNESIA_DEPLOY_LOCKED:-}" != 1 ] || ! parent_is_flock; then
   status=0
   DAILYAMNESIA_DEPLOY_LOCKED=1 flock -n --close -E 99 "$LOCKFILE" "$REPO_ROOT/tools/deploy.sh" "$@" || status=$?
   if [ "$status" -eq 99 ]; then
