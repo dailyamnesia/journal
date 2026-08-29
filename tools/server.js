@@ -44,13 +44,6 @@ function createRequestHandler(publicDir) {
   // against it below.
   const realPublicDir = fs.realpathSync(publicDir);
 
-  function serveNotFound(res) {
-    fs.readFile(path.join(publicDir, '404.html'), (err2, notFoundPage) => {
-      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(err2 ? 'not found' : notFoundPage);
-    });
-  }
-
   return (req, res) => {
     const filePath = resolveRequestPath(req.url, publicDir);
     if (!filePath) {
@@ -79,6 +72,37 @@ function createRequestHandler(publicDir) {
       if (stream) stream.destroy();
     });
 
+    // Streamed rather than read into memory in one shot, for the same reason
+    // the real-file path below is: fs.readFile buffers the *entire* 404 page
+    // before anything is written to the response, no matter how slow (or
+    // absent) the client's own reads are. Each concurrent request that
+    // misses -- a scanner probing many nonexistent URLs is all it takes, no
+    // attacker-controlled file needed -- held its own full-size copy of
+    // 404.html in memory at once, the exact same unbounded-memory shape the
+    // real-file path was fixed for, just reached through the error path
+    // instead, which that earlier fix never touched. Confirmed directly:
+    // 8 concurrent requests for nonexistent paths against a 15MB 404.html
+    // grew this process's RSS by over 120MB, matching the pre-fix numbers
+    // for the equivalent bug on the success path. `stream` is assigned into
+    // the same closure variable the 'close' listener above already watches,
+    // so an early client disconnect while the 404 page is still streaming
+    // destroys it exactly the same way it does for a real file, instead of
+    // leaking its fd.
+    function serveNotFound() {
+      if (closed) return;
+      stream = fs.createReadStream(path.join(publicDir, '404.html'));
+      stream.on('error', () => {
+        if (closed || res.headersSent) return res.end();
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('not found');
+      });
+      stream.once('open', () => {
+        if (closed) return;
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        stream.pipe(res);
+      });
+    }
+
     // resolveRequestPath's boundary check is string-based: it only confirms
     // the *requested* path stays inside publicDir. fs.readFile below follows
     // symlinks, so a symlink sitting inside publicDir (pointing anywhere on
@@ -88,7 +112,7 @@ function createRequestHandler(publicDir) {
     fs.realpath(filePath, (err, real) => {
       if (closed) return;
       if (err || (real !== realPublicDir && !real.startsWith(realPublicDir + path.sep))) {
-        return serveNotFound(res);
+        return serveNotFound();
       }
 
       // A request path that resolves to a *directory* (e.g. /posts, a real
@@ -146,12 +170,12 @@ function createRequestHandler(publicDir) {
           if (!openErr) fs.close(fd, () => {});
           return;
         }
-        if (openErr) return serveNotFound(res);
+        if (openErr) return serveNotFound();
         fs.fstat(fd, (statErr, stats) => {
           if (closed) return fs.close(fd, () => {});
           if (statErr || !stats.isFile()) {
             fs.close(fd, () => {});
-            return serveNotFound(res);
+            return serveNotFound();
           }
 
           // Streamed rather than read into memory in one shot: fs.readFile

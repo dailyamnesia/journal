@@ -580,6 +580,60 @@ test('server: concurrent requests for a large file do not each buffer the whole 
   );
 });
 
+test('server: concurrent 404s do not each buffer the whole 404 page in memory', async (t) => {
+  // Regression test: the previous fix above only streamed the *success*
+  // path -- a real file found on disk. serveNotFound, the error path
+  // reached on every miss, still read 404.html in full with fs.readFile
+  // before writing anything to the response, exactly the same buffering
+  // shape that was fixed for real files, just left behind on the path a
+  // scanner probing many nonexistent URLs concurrently hits hardest. No
+  // attacker-controlled file is needed for this one -- 404.html itself,
+  // whatever size the site happens to make it, gets held in full once per
+  // concurrent miss.
+  //
+  // Same measurement technique as the large-file test above: clients that
+  // never read a byte of the response, against a 15MB 404.html, separate a
+  // buffering implementation (~120MB of RSS growth) from a streaming one
+  // (~25MB) clearly. 70MB leaves the same wide margin on both sides.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'index.html'), '<h1>home</h1>');
+  const SIZE = 15 * 1024 * 1024;
+  fs.writeFileSync(path.join(dir, '404.html'), Buffer.alloc(SIZE, 'y'));
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const sockets = [];
+  t.after(() => sockets.forEach((s) => s.destroy()));
+
+  if (global.gc) global.gc();
+  await new Promise((r) => setTimeout(r, 50));
+  const before = process.memoryUsage().rss;
+
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write(`GET /this-does-not-exist-${i} HTTP/1.1\r\nHost: x\r\n\r\n`);
+    });
+    // Deliberately no 'data' listener, same rationale as the large-file
+    // test: memory has to stay bounded on the server side regardless of
+    // whether the client ever reads the response.
+    sock.on('error', () => {});
+    sockets.push(sock);
+  }
+
+  await new Promise((r) => setTimeout(r, 500));
+  const after = process.memoryUsage().rss;
+  const deltaMb = (after - before) / (1024 * 1024);
+  assert.ok(
+    deltaMb < 70,
+    `expected RSS growth to stay well under 70MB with ${N} unread requests for nonexistent paths against a 15MB 404.html, got ${deltaMb.toFixed(1)}MB (looks like the whole 404 page is being buffered per request)`
+  );
+});
+
 function getWithTimeout(port, urlPath, timeoutMs) {
   return new Promise((resolve) => {
     const start = Date.now();
