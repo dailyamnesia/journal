@@ -836,6 +836,51 @@ class TestBuildIndexPointsAtOldestPost(unittest.TestCase):
         self.assertIn("start-here", index)
 
 
+class TestBuildEscapesSlugInIndexHref(unittest.TestCase):
+    """The index page's post-list <li> links build an href straight from
+    each post's slug (its filename, sans extension). Every other place this
+    file interpolates a slug into an href -- render_post_nav, render_start_here,
+    render_feed's entry URLs -- runs it through html.escape() first; this was
+    the one spot that didn't, so a slug containing an HTML-special character
+    (e.g. a post filed as "2026-01-01-q&a-session.md", a plausible name for a
+    post about a Q&A) landed as a raw, unescaped "&" in the href -- an
+    ambiguous ampersand, invalid HTML -- right next to its own
+    correctly-escaped title text."""
+
+    def test_ampersand_in_slug_is_escaped_in_index_href(self):
+        orig_posts_dir = build_site.POSTS_DIR
+        orig_static_dir = build_site.STATIC_DIR
+        orig_charter_path = build_site.CHARTER_PATH
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                posts_dir = d / "posts"
+                posts_dir.mkdir()
+                static_dir = d / "static"
+                static_dir.mkdir()
+                (static_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+                (d / "CHARTER.md").write_text("# Charter\n\nA rule.\n", encoding="utf-8")
+                (posts_dir / "2026-01-01-q&a-session.md").write_text(
+                    '---\ntitle: "A Q&A session"\ndate: 2026-01-01\n---\nBody text.\n',
+                    encoding="utf-8",
+                )
+
+                build_site.POSTS_DIR = posts_dir
+                build_site.STATIC_DIR = static_dir
+                build_site.CHARTER_PATH = d / "CHARTER.md"
+
+                out = d / "_site"
+                build_site.build(out)
+                index = (out / "index.html").read_text(encoding="utf-8")
+        finally:
+            build_site.POSTS_DIR = orig_posts_dir
+            build_site.STATIC_DIR = orig_static_dir
+            build_site.CHARTER_PATH = orig_charter_path
+
+        self.assertIn('href="posts/2026-01-01-q&amp;a-session.html"', index)
+        self.assertNotIn('href="posts/2026-01-01-q&a-session.html"', index)
+
+
 class TestBuildLinksAdjacentPosts(unittest.TestCase):
     """Every post page should offer a way onward without a trip through the
     index, and the chain has to run in reading order end to end."""

@@ -590,7 +590,18 @@ def build(out_dir):
         )
 
     items = "\n".join(
-        f'    <li><a href="posts/{p["slug"]}.html">{html.escape(p["title"])}</a> '
+        # slug goes into an href attribute, same as every other slug
+        # interpolation in this file (render_post_nav, render_start_here,
+        # render_feed's entry URLs) -- it must be html.escape()'d here too,
+        # not just the title text next to it. This was the one place that
+        # slipped through: a post filename containing an HTML-special
+        # character (e.g. "2026-01-01-q&a-session.md", a plausible slug for
+        # a post about a Q&A) produced a raw, unescaped "&" in the href
+        # (href="posts/2026-01-01-q&a-session.html") right beside its own
+        # correctly-escaped title ("A Q&amp;A session") -- an ambiguous
+        # ampersand, which is invalid HTML, even though browsers render it
+        # leniently.
+        f'    <li><a href="posts/{html.escape(p["slug"])}.html">{html.escape(p["title"])}</a> '
         f'<span class="post-date">{html.escape(p["date"])}</span></li>'
         for p in posts
     )
