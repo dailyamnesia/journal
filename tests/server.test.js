@@ -191,6 +191,40 @@ test('server: unknown path serves 404.html with a 404 status', async (t) => {
   });
 });
 
+test('server: a symlinked 404.html pointing outside publicDir does not leak its target', async (t) => {
+  // Regression test: every other file this handler ever opens -- the
+  // requested file itself -- goes through fs.realpath and a containment
+  // recheck against realPublicDir before being opened (the fixes behind the
+  // "symlink inside publicDir" and "symlink swapped mid-request" tests
+  // above). serveNotFound() never got the same check: it opened
+  // `path.join(publicDir, '404.html')` directly, with no realpath call at
+  // all. "Fixed name" only means the *name* is fixed, not what's actually on
+  // disk at that name -- if publicDir/404.html is itself a symlink pointing
+  // anywhere else on disk (a bad deploy step, a build tool swapping in a
+  // symlink, a stray file left by some other tool -- the same "no
+  // attacker-chosen filename needed" reasoning as the FIFO-at-404.html fix
+  // below, since this exact path is reached by *every* request for *any*
+  // nonexistent URL), its target's contents were served as the 404 response
+  // body to any visitor. Confirmed directly: with 404.html replaced by a
+  // symlink to a file outside publicDir containing a marker string,
+  // requesting any nonexistent path returned that marker string in the body.
+  const dir = makePublicDir(t);
+  const secretDir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-404secret-'));
+  t.after(() => fs.rmSync(secretDir, { recursive: true, force: true }));
+  const secretPath = path.join(secretDir, 'shadow.txt');
+  const secretMarker = 'SHOULD_NEVER_BE_SERVED_VIA_404';
+  fs.writeFileSync(secretPath, secretMarker);
+
+  fs.rmSync(path.join(dir, '404.html'));
+  fs.symlinkSync(secretPath, path.join(dir, '404.html'));
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/this-does-not-exist');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.body, new RegExp(secretMarker));
+  });
+});
+
 test('server: traversal attempt gets a 400, not a file', async (t) => {
   const dir = makePublicDir(t);
   await withServer(dir, async (port) => {

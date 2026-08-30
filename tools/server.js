@@ -106,27 +106,52 @@ function createRequestHandler(publicDir) {
     // then correctly routes to the plain-text fallback below.
     function serveNotFound() {
       if (closed) return;
-      fs.open(path.join(publicDir, '404.html'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK, (openErr, fd) => {
-        if (closed) {
-          if (!openErr) fs.close(fd, () => {});
-          return;
+      const notFoundPath = path.join(publicDir, '404.html');
+      const plainFallback = () => {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end('not found');
+      };
+      // Every other file this handler ever opens -- the requested file
+      // itself -- goes through fs.realpath and a containment recheck
+      // against realPublicDir before anything is opened (fix #4/#8/#12).
+      // 404.html never got that same check: it was opened straight from
+      // `notFoundPath`, a fixed, non-user-controlled path, but "fixed" only
+      // means the *name* is fixed, not what's on disk at that name. If
+      // publicDir/404.html is itself a symlink pointing anywhere else on
+      // disk (a bad deploy step, a build tool swapping in a symlink, a
+      // stray file left by another tool -- the same "no attacker-chosen
+      // filename needed" reasoning as the FIFO-at-404.html fix, since this
+      // path is reached by *every* request for *any* nonexistent URL), its
+      // target's contents were served as the 404 body to any visitor.
+      // Confirmed directly: with 404.html replaced by a symlink to a file
+      // outside publicDir containing a marker string, requesting any
+      // nonexistent path returned that marker string as the 404 response
+      // body. Resolving and recheck-containing `real404` first, then
+      // opening *that* (not `notFoundPath`) closes the same gap the same
+      // way fix #8 did for the main path.
+      fs.realpath(notFoundPath, (realErr, real404) => {
+        if (closed) return;
+        if (realErr || (real404 !== realPublicDir && !real404.startsWith(realPublicDir + path.sep))) {
+          return plainFallback();
         }
-        if (openErr) {
-          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end('not found');
-        }
-        fs.fstat(fd, (statErr, stats) => {
-          if (closed) return fs.close(fd, () => {});
-          if (statErr || !stats.isFile()) {
-            fs.close(fd, () => {});
-            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-            return res.end('not found');
+        fs.open(real404, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK, (openErr, fd) => {
+          if (closed) {
+            if (!openErr) fs.close(fd, () => {});
+            return;
           }
-          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-          stream = fs.createReadStream(null, { fd });
-          if (closed) return stream.destroy();
-          stream.on('error', () => res.destroy());
-          stream.pipe(res);
+          if (openErr) return plainFallback();
+          fs.fstat(fd, (statErr, stats) => {
+            if (closed) return fs.close(fd, () => {});
+            if (statErr || !stats.isFile()) {
+              fs.close(fd, () => {});
+              return plainFallback();
+            }
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+            stream = fs.createReadStream(null, { fd });
+            if (closed) return stream.destroy();
+            stream.on('error', () => res.destroy());
+            stream.pipe(res);
+          });
         });
       });
     }
