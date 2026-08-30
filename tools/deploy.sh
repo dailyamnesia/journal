@@ -227,6 +227,52 @@ if ! NEW_POST_COUNT="$(find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
   echo "FAILED: could not count post pages in the new build ($BUILD_DIR/posts)." >&2
   exit 1
 fi
+
+# `sudo test -d "$LIVE_PUBLIC/posts"` returning false means one of two very
+# different things: the directory genuinely doesn't exist yet (a real first
+# deploy, where OLD_POST_COUNT=0 below is correct and the guard above this
+# comment shouldn't apply), or `sudo` itself failed to even run `test` — e.g.
+# a cached credential timestamp expired and this script is running with no
+# controlling TTY and no askpass helper (a cron/systemd-timer invocation, or
+# this script's own `flock`-wrapped self-re-exec with redirected stdio). Both
+# cases look identical to a bare `if sudo test -d ...`: both make it return
+# false, and OLD_POST_COUNT silently defaults to 0 either way — which defeats
+# the whole point of the guard below when it's the second case, since a truly
+# broken build (glob failure, an upstream crash this script didn't catch)
+# would then compare against a wrongly-0 "old" count instead of the real live
+# one, pass the guard, and let `rsync --delete-delay` wipe every live post.
+# This is also the very first `sudo` call anywhere in this script (confirmed
+# by grepping every other one below), so a broken-sudo condition would first
+# surface right here. Reproduced directly: a scratch copy of this guard,
+# pointed at a real posts/ dir with 3 live posts and a broken build with 0,
+# correctly refused under a working sudo; under a fake `sudo` that always
+# fails immediately (modeling the no-TTY/expired-credential case), it
+# silently computed OLD_POST_COUNT=0 and would have proceeded straight into
+# the rsync below instead of refusing.
+#
+# The fix has to check sudo's own health directly (`sudo -n true`), not
+# infer it from some other directory's existence: an earlier version of this
+# fix instead required `sudo test -d "$LIVE_PUBLIC"` (the parent of
+# .../posts) to succeed first, reasoning that the parent always exists once
+# the site has been deployed once — but that reintroduces the identical
+# ambiguity one level up, since `sudo test -d` on a directory that genuinely
+# doesn't exist yet (a real first deploy) is indistinguishable from `sudo`
+# itself failing, and would wrongly abort a genuine first deploy under
+# perfectly healthy sudo. `sudo -n true` sidesteps this entirely: `-n`
+# (non-interactive) makes it fail immediately rather than prompt when
+# credentials are missing/expired, and its result depends only on whether
+# sudo can run *something* right now, never on any path's existence.
+# Reproduced directly, three ways: (1) genuine first deploy (target
+# directory doesn't exist, real working sudo) passes through to
+# OLD_POST_COUNT=0 as intended; (2) real sudo with a broken build against
+# real live posts still correctly refuses; (3) broken sudo (fake `sudo -n`
+# failing) against real live posts now correctly refuses instead of
+# silently defaulting to 0 the way the parent-directory check still would
+# have let through.
+if ! sudo -n true 2>/dev/null; then
+  echo "FAILED: sudo is not usable non-interactively right now (expired/missing credentials, no controlling TTY, or similar) — refusing to guess whether posts are currently live rather than risk silently treating a real deploy as a first deploy." >&2
+  exit 1
+fi
 OLD_POST_COUNT=0
 if sudo test -d "$LIVE_PUBLIC/posts"; then
   if ! OLD_POST_COUNT="$(sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
