@@ -772,3 +772,77 @@ test('server: a FIFO in publicDir does not stall unrelated requests by exhaustin
     }
   }
 });
+
+test('server: a FIFO at 404.html does not stall unrelated requests via the not-found path', async (t) => {
+  // Regression test: the fix just above closed the FIFO/thread-pool-
+  // exhaustion hole for the *main* file-serving path by opening with
+  // O_NONBLOCK. serveNotFound() has its own, entirely separate call --
+  // fs.createReadStream(path.join(publicDir, '404.html')) -- which still
+  // opens with plain default flags (equivalent to 'r', no O_NONBLOCK). It
+  // never got the same fix.
+  //
+  // 404.html isn't attacker-chosen the way the main path's requested file
+  // is, but it doesn't need to be: it's a fixed name reached by *every*
+  // single request for *any* nonexistent URL, not just requests that happen
+  // to target one specific unusual filename. A stray FIFO ending up at
+  // exactly that path (some other tool, a bad build step, anything) means a
+  // handful of concurrent requests for any nonexistent path -- a scanner
+  // probing dead links needs nothing more -- each block a thread-pool
+  // worker opening it, forever, since nothing ever opens the other end for
+  // writing. Four such requests exhaust the whole pool and stall every
+  // other request site-wide, including for perfectly ordinary files, until
+  // something writes to the FIFO or the process is restarted.
+  const dir = makePublicDir(t);
+  const { execFileSync } = require('node:child_process');
+  const fifoPath = path.join(dir, '404.html');
+  fs.rmSync(fifoPath);
+  execFileSync('mkfifo', [fifoPath]);
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const poolSize = Number(process.env.UV_THREADPOOL_SIZE) || 4;
+
+  try {
+    // Fire off enough concurrent requests for *nonexistent* paths -- each
+    // one routes through serveNotFound(), which tries to open the FIFO --
+    // to occupy every thread-pool worker with a blocking open(). Not
+    // awaited: pre-fix, these never resolve on their own.
+    const notFoundRequests = Array.from({ length: poolSize }, (_, i) =>
+      getWithTimeout(port, `/does-not-exist-${i}`, 10000).catch(() => {})
+    );
+
+    // Give the FIFO opens a moment to actually reach the blocking syscall in
+    // their thread-pool workers before piling on the "innocent" request.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // An ordinary request for an ordinary file, unrelated to any 404.
+    // Bounded well below the notFoundRequests' own 10s timeout: post-fix
+    // this resolves in milliseconds; pre-fix, the pool is fully occupied by
+    // blocked FIFO opens from the 404 path and this never completes within
+    // the bound.
+    const result = await getWithTimeout(port, '/index.html', 3000);
+
+    assert.equal(
+      result.timedOut,
+      false,
+      `an unrelated request for an ordinary file must not stall behind ${poolSize} concurrent 404s whose 404.html is a FIFO (thread pool exhaustion via the not-found path)`
+    );
+    assert.equal(result.status, 200);
+    assert.match(result.body, /home/);
+
+    await Promise.all(notFoundRequests);
+  } finally {
+    // Unblock any still-pending FIFO opens from a genuinely separate OS
+    // process, not through this process's own -- possibly still fully
+    // occupied -- thread pool.
+    try {
+      execFileSync('sh', ['-c', `printf x > ${JSON.stringify(fifoPath)}`], { timeout: 5000 });
+    } catch {
+      // Best-effort: if this process's fd table or the shell itself is in a
+      // bad state, there's nothing more useful to do here than move on.
+    }
+  }
+});

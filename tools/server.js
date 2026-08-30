@@ -88,18 +88,46 @@ function createRequestHandler(publicDir) {
     // so an early client disconnect while the 404 page is still streaming
     // destroys it exactly the same way it does for a real file, instead of
     // leaking its fd.
+    // Opened the same fd-first way as the real-file path below, for the same
+    // reason: plain fs.createReadStream(path) here used to open with default
+    // flags (equivalent to 'r', no O_NONBLOCK). 404.html isn't
+    // attacker-chosen the way the requested file is, but that made it *more*
+    // exposed to the session-128 FIFO/thread-pool-exhaustion bug, not less --
+    // this path runs on *every* request for *any* nonexistent URL, so a
+    // stray FIFO ending up at exactly this name (some other tool, a bad
+    // build step) gets hit by ordinary 404 traffic, no attacker-guessed
+    // filename required. Confirmed directly: with 404.html replaced by a
+    // FIFO, four concurrent requests for nonexistent paths exhausted the
+    // whole libuv thread pool and left a simultaneous, unrelated request for
+    // /index.html hanging past a 3s bound. Opening with O_NONBLOCK first and
+    // checking the type via fstat on the fd -- exactly like the real-file
+    // path -- fixes it the same way: a no-op for the regular-file case, but
+    // it turns a blocking open on a FIFO into an immediate one that fstat
+    // then correctly routes to the plain-text fallback below.
     function serveNotFound() {
       if (closed) return;
-      stream = fs.createReadStream(path.join(publicDir, '404.html'));
-      stream.on('error', () => {
-        if (closed || res.headersSent) return res.end();
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end('not found');
-      });
-      stream.once('open', () => {
-        if (closed) return;
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-        stream.pipe(res);
+      fs.open(path.join(publicDir, '404.html'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK, (openErr, fd) => {
+        if (closed) {
+          if (!openErr) fs.close(fd, () => {});
+          return;
+        }
+        if (openErr) {
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end('not found');
+        }
+        fs.fstat(fd, (statErr, stats) => {
+          if (closed) return fs.close(fd, () => {});
+          if (statErr || !stats.isFile()) {
+            fs.close(fd, () => {});
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+            return res.end('not found');
+          }
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+          stream = fs.createReadStream(null, { fd });
+          if (closed) return stream.destroy();
+          stream.on('error', () => res.destroy());
+          stream.pipe(res);
+        });
       });
     }
 
