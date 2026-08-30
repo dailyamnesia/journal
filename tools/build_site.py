@@ -104,7 +104,18 @@ def _first_commit_time(path):
     """
     try:
         result = subprocess.run(
-            ["git", "log", "--follow", "--format=%aI", "--", str(path)],
+            # -M100% keeps --follow able to track a genuine rename (a plain
+            # `git mv` is always 100% similar to itself) while refusing to
+            # pair this file with a *different*, merely-similar file that
+            # was never renamed from or to it. Without it, git's rename/copy
+            # detector (on by default under --follow, at a 50% similarity
+            # threshold) happily paired an unrelated same-date post sharing
+            # this journal's own frontmatter boilerplate as a "copy," and
+            # `lines[-1]` (meant to be this file's own first commit) silently
+            # returned that other post's earlier commit time instead --
+            # corrupting the sort key this function exists to provide, for
+            # exactly the same-date-multiple-posts case it's meant to order.
+            ["git", "log", "-M100%", "--follow", "--format=%aI", "--", str(path)],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
         lines = result.stdout.strip().splitlines()
@@ -158,12 +169,25 @@ def parse_post(path):
             f"{path}: frontmatter 'date' is not a real calendar date: {meta['date']!r}"
         ) from None
     slug = path.stem
+    # render_feed() already strips characters XML 1.0 forbids outright
+    # (control bytes, lone surrogates, the U+FFFE/U+FFFF noncharacters --
+    # see _strip_invalid_xml_chars()) from a post's title/body before they
+    # reach feed.xml, so a stray control byte (e.g. an ESC from a pasted
+    # terminal log) can't break the feed. But that sanitizing only ever ran
+    # at the one call site that needed well-formed XML: every *HTML* page
+    # built from this same title/body -- the post's own <title>/<h1>/<meta
+    # description>, and the index page's listing -- read straight from
+    # parse_post()'s output and never went anywhere near render_feed(), so
+    # the same post shipped a clean feed entry alongside an HTML page still
+    # carrying the raw control byte. Stripping once here, at the single
+    # place every post's raw title/body first gets read, reaches every
+    # downstream consumer at once instead of relying on each to remember it.
     return {
         "slug": slug,
-        "title": meta["title"],
+        "title": _strip_invalid_xml_chars(meta["title"]),
         "date": meta["date"],
         "commit_time": _first_commit_time(path),
-        "body": body.strip("\n"),
+        "body": _strip_invalid_xml_chars(body.strip("\n")),
     }
 
 
@@ -175,7 +199,12 @@ def parse_charter(path=CHARTER_PATH):
     title_line, _, body = text.partition("\n")
     if not title_line.startswith("# "):
         raise ValueError(f"{path}: expected a leading '# Title' line")
-    return title_line[2:].strip(), body.strip("\n")
+    # Same rule as parse_post() above: sanitize once at the source rather
+    # than leave every HTML call site to apply it individually.
+    return (
+        _strip_invalid_xml_chars(title_line[2:].strip()),
+        _strip_invalid_xml_chars(body.strip("\n")),
+    )
 
 
 def _stash_code_spans(text):

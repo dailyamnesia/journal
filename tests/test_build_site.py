@@ -1,6 +1,8 @@
 import contextlib
 import io
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -514,6 +516,29 @@ class TestParsePost(unittest.TestCase):
             post = build_site.parse_post(path)
             self.assertEqual(post["title"], 'He said "no"')
 
+    def test_control_character_in_title_and_body_is_stripped(self):
+        # render_feed() strips characters XML 1.0 forbids (control bytes,
+        # lone surrogates, U+FFFE/U+FFFF -- see _strip_invalid_xml_chars())
+        # from a post's title/body before they reach feed.xml, so a stray
+        # control byte (e.g. an ESC from a pasted terminal log) can't break
+        # the feed. But parse_post() -- the single place every post's raw
+        # title/body first gets read -- never applied that same rule, so the
+        # actual HTML pages (each post's own <title>/<h1>/<meta
+        # description>, and the index page's listing, all built straight
+        # from parse_post()'s output without going anywhere near
+        # render_feed()) shipped the raw, un-sanitized control byte, even
+        # though the feed for the exact same post was clean.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-esc-post.md"
+            path.write_text(
+                '---\ntitle: "Session log \x1b[31mERROR\x1b[0m recap"\ndate: 2026-01-01\n'
+                "---\nBody with a stray \x1b control byte in it.\n",
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertNotIn("\x1b", post["title"])
+            self.assertNotIn("\x1b", post["body"])
+
     def test_uncommitted_file_gets_sentinel_commit_time(self):
         # A file outside this repo's worktree can't be resolved by `git log`
         # (exactly what's true of a just-written, not-yet-committed post at
@@ -526,6 +551,67 @@ class TestParsePost(unittest.TestCase):
             )
             post = build_site.parse_post(path)
             self.assertEqual(post["commit_time"], build_site.UNCOMMITTED_SENTINEL)
+
+    def test_commit_time_does_not_borrow_an_unrelated_same_date_posts_history(self):
+        # _first_commit_time() runs `git log --follow -- <path>` to find when
+        # a post was actually first committed, used to order same-date posts
+        # (see TestBuildOrdersSameDatePostsByCommitTime below). --follow is
+        # meant only to carry a file's history across a later rename of that
+        # *same* file, but git's rename/copy detector (on by default under
+        # --follow, ~50% similarity threshold) will happily pair an added
+        # file with any other unrelated, untouched file already in the tree
+        # that just happens to be similar enough -- and reports that pairing
+        # as if the new file had been renamed from the old one. Two short
+        # posts sharing this journal's own frontmatter boilerplate, differing
+        # only in title and one line of body, are exactly the kind of pair
+        # likely to cross that threshold by accident -- most plausible of all
+        # for two posts filed under the same date, precisely the case this
+        # sort key exists to order correctly. `_first_commit_time` takes the
+        # *last* line of `git log --follow`'s output as "the" first commit;
+        # with the false pairing, that silently became the *other* post's
+        # earlier commit time, not this post's own.
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+
+            def git(*args):
+                subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+            def commit(relpath, content, at):
+                path = repo / relpath
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+                git("add", relpath)
+                run_env = {**os.environ, "GIT_AUTHOR_DATE": at, "GIT_COMMITTER_DATE": at}
+                subprocess.run(
+                    ["git", "commit", "-q", "-m", relpath],
+                    cwd=repo, check=True, capture_output=True, text=True, env=run_env,
+                )
+                return path
+
+            git("init", "-q")
+            git("config", "user.email", "test@example.test")
+            git("config", "user.name", "Test")
+            commit(
+                "posts/2026-08-09-alpha.md",
+                '---\ntitle: "Alpha"\ndate: 2026-08-09\n---\n'
+                "Something happened today worth writing down in full detail.\n",
+                "2026-08-09T09:00:00Z",
+            )
+            beta_path = commit(
+                "posts/2026-08-09-beta.md",
+                '---\ntitle: "Beta"\ndate: 2026-08-09\n---\n'
+                "Something happened today worth writing down in full detail.\n",
+                "2026-08-09T15:00:00Z",
+            )
+
+            orig_repo_root = build_site.REPO_ROOT
+            try:
+                build_site.REPO_ROOT = repo
+                post = build_site.parse_post(beta_path)
+            finally:
+                build_site.REPO_ROOT = orig_repo_root
+
+            self.assertEqual(post["commit_time"], "2026-08-09T15:00:00Z")
 
 
 class TestRenderFeed(unittest.TestCase):
@@ -893,6 +979,50 @@ class TestBuildEscapesSlugInIndexHref(unittest.TestCase):
 
         self.assertIn('href="posts/2026-01-01-q&amp;a-session.html"', index)
         self.assertNotIn('href="posts/2026-01-01-q&a-session.html"', index)
+
+
+class TestBuildStripsControlCharactersFromHtmlOutput(unittest.TestCase):
+    """render_feed() already strips characters XML 1.0 forbids from a post's
+    title/body before they reach feed.xml; parse_post() didn't apply that
+    same rule, so the actual built HTML (the post's own page and the index
+    listing) shipped the raw control byte even though the feed for the same
+    post was clean. Confirms the fix at the level a reader would actually
+    notice it: the real built pages, not just parse_post()'s return value."""
+
+    def test_control_character_does_not_reach_post_page_or_index(self):
+        orig_posts_dir = build_site.POSTS_DIR
+        orig_static_dir = build_site.STATIC_DIR
+        orig_charter_path = build_site.CHARTER_PATH
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                posts_dir = d / "posts"
+                posts_dir.mkdir()
+                static_dir = d / "static"
+                static_dir.mkdir()
+                (static_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+                (d / "CHARTER.md").write_text("# Charter\n\nA rule.\n", encoding="utf-8")
+                (posts_dir / "2026-01-01-esc-post.md").write_text(
+                    '---\ntitle: "Session log \x1b[31mERROR\x1b[0m recap"\ndate: 2026-01-01\n'
+                    "---\nBody with a stray \x1b control byte in it.\n",
+                    encoding="utf-8",
+                )
+
+                build_site.POSTS_DIR = posts_dir
+                build_site.STATIC_DIR = static_dir
+                build_site.CHARTER_PATH = d / "CHARTER.md"
+
+                out = d / "_site"
+                build_site.build(out)
+                index = (out / "index.html").read_text(encoding="utf-8")
+                post_page = (out / "posts" / "2026-01-01-esc-post.html").read_text(encoding="utf-8")
+        finally:
+            build_site.POSTS_DIR = orig_posts_dir
+            build_site.STATIC_DIR = orig_static_dir
+            build_site.CHARTER_PATH = orig_charter_path
+
+        self.assertNotIn("\x1b", index)
+        self.assertNotIn("\x1b", post_page)
 
 
 class TestBuildLinksAdjacentPosts(unittest.TestCase):
