@@ -413,8 +413,22 @@ start-limit-hit after repeated restarts within 10s), recover with:
 SERVER_CHANGED=false
 if ! sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>&1; then
   echo "== server.js changed, deploying =="
-  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_SERVER"
-  sudo chown webapp:webapp "$LIVE_SERVER"
+  # Both `rsync` calls above overwrite live content atomically (temp file
+  # in the destination dir, renamed into place on success) -- this was the
+  # one write to live content that didn't, a plain `cp` straight onto
+  # $LIVE_SERVER. `cp` opens the destination, truncates it, and streams
+  # bytes in; if it's interrupted partway (disk full, a `sudo` hiccup, or
+  # this script itself receiving TERM -- `cleanup()`'s `pkill -TERM -P $$`
+  # delivers TERM straight to this `cp` child), the live file is left
+  # truncated: neither the old version nor the new one, just garbage that
+  # `node` can't even parse. Reproduced directly: a scratch copy sent
+  # SIGTERM ~50ms into copying a 200MB file left the destination at a
+  # partial byte count matching neither the original nor the source.
+  # Copying to a same-directory temp file and `mv`-ing it into place
+  # mirrors what rsync already does and closes the same gap here.
+  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_SERVER.new"
+  sudo chown webapp:webapp "$LIVE_SERVER.new"
+  sudo mv "$LIVE_SERVER.new" "$LIVE_SERVER"
   SERVER_CHANGED=true
 fi
 
@@ -461,10 +475,34 @@ done
 # from earlier testing, or even a shell command that mentions the filename
 # as a string), which turns this into a false "FAILED" after a deploy that
 # actually succeeded.
+#
+# Every exit below this point is reached only *after* the HTTP poll above
+# already got a real 200 from both / and /feed.xml — the new content is
+# live and being served correctly, full stop. That's a fundamentally
+# different situation from every other "FAILED" exit earlier in this
+# script (uncommitted tree, failing tests, refused post-count guard, a
+# restart that didn't come back), all of which mean nothing shipped or the
+# site is actually down. A plain `exit 1` here can't be told apart from
+# those by anything watching this script's exit code (or grepping its
+# stderr for "FAILED") -- a caller that reacts to "FAILED" by e.g.
+# re-deploying a previous commit, or paging someone as "site is down",
+# would be reacting to a deploy that in fact fully succeeded and is
+# already verified live, just failed this one extra process-identity
+# sanity check. Reproduced directly: a scratch copy of this exact tail
+# section, pointed at a real HTTP server actually answering 200 on both
+# paths and a faked `ps` reporting the wrong owner, still printed a bare
+# "FAILED: ... not webapp" and exited 1 -- identical in both shape and
+# exit code to a completely unrelated, nothing-happened early abort (a
+# dirty working tree) from the very top of this same script. Giving this
+# case its own exit code and saying outright that the content is already
+# live lets a caller (or a human) tell "the deploy didn't happen" apart
+# from "the deploy happened and is live; only this last sanity check
+# failed" without having to guess from prose alone.
+POST_VERIFY_SANITY_FAILED=2
 pid="$(systemctl show -p MainPID --value dailyamnesia-web.service)"
 if [ -z "$pid" ] || [ "$pid" = "0" ]; then
-  echo "FAILED: could not determine dailyamnesia-web.service's running PID" >&2
-  exit 1
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine dailyamnesia-web.service's running PID afterward, so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
+  exit "$POST_VERIFY_SANITY_FAILED"
 fi
 # Guarded the same way the post-count checks above are: `ps -o user= -p
 # "$pid"` can itself fail (e.g. the process has already exited by the time
@@ -475,12 +513,12 @@ fi
 # this script's own `FAILED:` messages ever printed — the same failure shape
 # the post-count checks were fixed for in session 95.
 if ! owner="$(ps -o user= -p "$pid" | tr -d ' ')"; then
-  echo "FAILED: could not determine the owning user of server.js process (pid $pid) — it may have already exited." >&2
-  exit 1
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine the owning user of server.js process (pid $pid) afterward; it may have already exited. Investigate directly; no further action is needed to ship this deploy." >&2
+  exit "$POST_VERIFY_SANITY_FAILED"
 fi
 if [ "$owner" != "webapp" ]; then
-  echo "FAILED: server.js process (pid $pid) is owned by '$owner', not webapp" >&2
-  exit 1
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but server.js process (pid $pid) is owned by '$owner', not webapp. Investigate directly; no further action is needed to ship this deploy." >&2
+  exit "$POST_VERIFY_SANITY_FAILED"
 fi
 
 echo "== done: deployed, verified, process owned by webapp =="
