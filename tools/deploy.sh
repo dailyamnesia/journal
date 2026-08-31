@@ -382,8 +382,43 @@ echo "== syncing content to $LIVE_PUBLIC =="
 # already live while the post file itself didn't exist yet, for the whole
 # multi-second transfer. Posts go out first and finish completely; only
 # then does the second pass publish the top-level pages that link to them.
-sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
+#
+# But the posts pass itself must not delete anything yet, and a third pass
+# is needed after the top-level one: build_site.py derives each post's
+# output filename from its source markdown's own filename, so renaming a
+# post's source file makes posts/<old-slug>.html extraneous in the same
+# build that adds posts/<new-slug>.html, and index.html/feed.xml are
+# exactly what stops linking to the old slug and starts linking to the new
+# one. If the posts pass were still --delete-delay as originally written,
+# it would fully complete — new slug published *and* old slug deleted —
+# before the top-level pass ever ran; a process death in between (the same
+# TERM/OOM/disk-full causes already documented above and in cleanup(), just
+# landing between these calls instead of mid-transfer inside one of them)
+# leaves index.html/feed.xml still advertising the old slug while the file
+# they link to is already gone — a live dead link, and a strictly worse
+# outcome than doing nothing, from a fix whose whole point is preventing
+# exactly that. Reproduced directly: a scratch old-live/new-build pair with
+# a post renamed between them, run through the original two-pass sequence
+# with only the first pass executed (simulating the process dying right
+# after it): index.html still pointed at the old slug, and that file was
+# already gone from posts/ — a 404 behind a live link. Splitting into three
+# passes closes it: (1) posts, without --delete, so the new slug's page
+# (and any updated prev/next links on its neighbors) exist before anything
+# can advertise them, while the old slug's page is left alone; (2)
+# top-level, --delete-delay as before, which is what actually flips which
+# slug is linked — safe now, since pass 1 already guarantees both the old
+# and new pages exist through this pass; (3) posts again, now with
+# --delete-delay, to remove the old slug's page, safe because pass 2
+# already guarantees nothing live links to it anymore. A death between any
+# two of these three passes leaves either an extra live post nothing points
+# at (harmless, swept up by the next deploy) or the original, unchanged
+# state — never a link to something missing. Re-running the identical
+# repro with all three passes, stopping after each one in turn, found no
+# point where a live link resolved to a missing file, unlike the two-pass
+# version.
+sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
 sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
+sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
 RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
