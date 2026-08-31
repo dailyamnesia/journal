@@ -144,7 +144,20 @@ def parse_post(path):
         # is just as broken as the key being absent -- `not in meta` alone
         # missed it, letting an empty string reach the rendered post and a
         # malformed feed <updated> timestamp instead of failing here.
-        if not meta.get(required):
+        #
+        # A quoted value containing only whitespace (e.g. `title: "   "`) is
+        # just as broken, but slipped past this same check: the surrounding
+        # `value.strip()` above runs *before* the quote-stripping on the line
+        # before this loop, so it only ever trims whitespace outside a
+        # quoted value, never inside it -- `"   "` stays non-empty (and thus
+        # truthy) all the way through. That produced a post that parsed and
+        # built successfully but rendered a blank <title>/<h1> and an index
+        # entry whose link had no visible or accessible text at all --
+        # exactly the kind of empty-link-name defect the project's own
+        # accessibility sweeps look for. Stripping again here, on the final
+        # value, catches whitespace hidden inside quotes the same way the
+        # blank/absent cases are already caught.
+        if not meta.get(required, "").strip():
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     # A non-empty but wrongly-formatted date (e.g. "Aug 30, 2026", or a
     # copy-paste of "08/30/2026") passes the check above and used to flow

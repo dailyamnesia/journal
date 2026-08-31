@@ -448,6 +448,27 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("date", str(ctx.exception))
 
+    def test_whitespace_only_quoted_required_value_names_the_file(self):
+        # A quoted value containing only whitespace (e.g. `title: "   "`) is
+        # just as broken as an outright-blank or missing key, but the plain
+        # `not meta.get(required)` check missed it: the surrounding
+        # `value.strip()` runs before the quotes are stripped off, so it only
+        # ever trims whitespace *outside* a quoted value, never inside it --
+        # `"   "` stays non-empty (truthy) and sails through. The post then
+        # built successfully but rendered a blank <title>/<h1> and an index
+        # entry whose link had no visible or accessible text at all. Must
+        # raise the same named-file error the blank/missing cases already do.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "   "\ndate: 2026-01-01\n---\nBody with a blank-looking title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight
