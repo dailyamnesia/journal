@@ -137,27 +137,33 @@ def parse_post(path):
         key, _, value = line.partition(":")
         value = value.strip()
         if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-            value = value[1:-1]
+            # Strip again after removing the quotes, not just before: the
+            # `value.strip()` above only ever trims whitespace *outside* the
+            # quoted pair (nothing after the colon but leading/trailing
+            # blanks around the quotes themselves), never whitespace that
+            # sits *inside* them. A whitespace-only quoted value (`title:
+            # "   "`) was already caught below, but a quoted value that's
+            # merely *padded* around real content (`title: "  Real Title
+            # "`) was not: it used to sail through as the literal stored
+            # title -- `'  Real Title  '`, padding and all -- reaching
+            # <title>, <h1>, the index link text, and the feed's own
+            # <title> unstripped, while writing the exact same title
+            # *without* quotes already came out clean (the pre-quote
+            # `.strip()` handles that case fine on its own). Stripping here
+            # closes the gap at its source so every downstream consumer
+            # gets the same clean value a quoted value is supposed to carry.
+            value = value[1:-1].strip()
         meta[key.strip()] = value
     for required in ("title", "date"):
         # A key present but left blank (e.g. "date:" with nothing after it)
         # is just as broken as the key being absent -- `not in meta` alone
         # missed it, letting an empty string reach the rendered post and a
-        # malformed feed <updated> timestamp instead of failing here.
-        #
-        # A quoted value containing only whitespace (e.g. `title: "   "`) is
-        # just as broken, but slipped past this same check: the surrounding
-        # `value.strip()` above runs *before* the quote-stripping on the line
-        # before this loop, so it only ever trims whitespace outside a
-        # quoted value, never inside it -- `"   "` stays non-empty (and thus
-        # truthy) all the way through. That produced a post that parsed and
-        # built successfully but rendered a blank <title>/<h1> and an index
-        # entry whose link had no visible or accessible text at all --
-        # exactly the kind of empty-link-name defect the project's own
-        # accessibility sweeps look for. Stripping again here, on the final
-        # value, catches whitespace hidden inside quotes the same way the
-        # blank/absent cases are already caught.
-        if not meta.get(required, "").strip():
+        # malformed feed <updated> timestamp instead of failing here. A
+        # quoted value containing only whitespace (e.g. `title: "   "`) is
+        # just as broken and is now caught the same way, since the parsing
+        # loop above already strips it down to an empty string before it
+        # ever reaches this check.
+        if not meta.get(required):
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     # A non-empty but wrongly-formatted date (e.g. "Aug 30, 2026", or a
     # copy-paste of "08/30/2026") passes the check above and used to flow

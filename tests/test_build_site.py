@@ -522,6 +522,30 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("date", str(ctx.exception))
 
+    def test_quoted_value_padded_with_whitespace_inside_the_quotes_is_trimmed(self):
+        # session 146 fixed a *whitespace-only* quoted value (`title: "   "`)
+        # slipping past the required-key check as truthy. The narrower
+        # sibling gap that fix left open: a quoted value that isn't blank,
+        # just *padded* -- real content with extra leading/trailing
+        # whitespace still sitting inside the quotes (e.g. `title: "  Real
+        # Title  "`). That passes the required-key check fine (it's
+        # non-empty), but the padding itself was never stripped, because the
+        # one `.strip()` call that runs before the quote characters are
+        # sliced off only ever reaches whitespace *outside* the quoted pair.
+        # The exact same title written *without* quotes comes out clean
+        # (the pre-quote strip handles that case), so quoting a title was
+        # the one way to make its padding survive into <title>/<h1>/the
+        # index link text/the feed's own <title> -- an inconsistency with no
+        # good reason, and a real, visible defect in the shipped content.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-padded.md"
+            path.write_text(
+                '---\ntitle: "  Real Title  "\ndate: 2026-01-01\n---\nBody.\n',
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "Real Title")
+
     def test_unquoted_value_ending_in_a_literal_quote_mark_is_not_mangled(self):
         # An unquoted title that happens to end with a quote character (e.g.
         # a quoted phrase the author didn't wrap the whole title in) used to
