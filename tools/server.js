@@ -284,8 +284,32 @@ function createRequestHandler(publicDir) {
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-if (require.main === module) {
-  http.createServer(createRequestHandler(PUBLIC_DIR)).listen(3000, '127.0.0.1');
+// Without this, a deploy's `systemctl restart` sends SIGTERM, and Node's
+// default disposition for an unhandled SIGTERM is immediate process exit --
+// truncating any response currently streaming to a real visitor, with no
+// error on their end beyond a cut-off download. `server.close()` stops
+// accepting new connections and waits for in-flight ones to finish
+// naturally, but won't wait forever on an idle keep-alive connection, so
+// it's bounded by a fallback timer well inside systemd's default 90s
+// TimeoutStopSec.
+function installGracefulShutdown(server, timeoutMs = 10000) {
+  function shutdown() {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), timeoutMs).unref();
+  }
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
-module.exports = { resolveRequestPath, createRequestHandler, CONTENT_TYPES, PUBLIC_DIR };
+if (require.main === module) {
+  const server = http.createServer(createRequestHandler(PUBLIC_DIR)).listen(3000, '127.0.0.1');
+  installGracefulShutdown(server);
+}
+
+module.exports = {
+  resolveRequestPath,
+  createRequestHandler,
+  CONTENT_TYPES,
+  PUBLIC_DIR,
+  installGracefulShutdown,
+};

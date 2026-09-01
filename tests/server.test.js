@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { resolveRequestPath, createRequestHandler, CONTENT_TYPES } = require('../tools/server.js');
+const { resolveRequestPath, createRequestHandler, CONTENT_TYPES, installGracefulShutdown } = require('../tools/server.js');
 
 function makePublicDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-'));
@@ -879,4 +879,107 @@ test('server: a FIFO at 404.html does not stall unrelated requests via the not-f
       // bad state, there's nothing more useful to do here than move on.
     }
   }
+});
+
+// installGracefulShutdown has to be exercised in a real, separate OS
+// process: it installs a handler for a real OS signal on `process`, which
+// can't be verified by sending a signal to this test's own process without
+// killing the test run itself.
+function spawnServerChild(t, dir, timeoutMs) {
+  const { spawn } = require('node:child_process');
+  const childScript = `
+    const http = require('http');
+    const { createRequestHandler, installGracefulShutdown } = require(${JSON.stringify(path.join(__dirname, '..', 'tools', 'server.js'))});
+    const server = http.createServer(createRequestHandler(${JSON.stringify(dir)})).listen(0, '127.0.0.1', () => {
+      console.log('PORT ' + server.address().port);
+    });
+    installGracefulShutdown(server, ${timeoutMs});
+  `;
+  const child = spawn(process.execPath, ['-e', childScript]);
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+  return child;
+}
+
+function waitForPort(child) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    child.stdout.on('data', (c) => {
+      buf += c;
+      const m = buf.match(/PORT (\d+)/);
+      if (m) resolve(Number(m[1]));
+    });
+    child.on('exit', (code) => reject(new Error(`child exited early with code ${code}`)));
+  });
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('SIGTERM lets an in-flight response finish instead of truncating it mid-stream', async (t) => {
+  const dir = makePublicDir(t);
+  // Large enough that it can't fully land in the kernel's socket buffers
+  // before the client (deliberately, below) stops draining its end --
+  // otherwise the response finishes writing before the signal even arrives
+  // and the test would pass without ever exercising the in-flight case.
+  const size = 40 * 1024 * 1024;
+  fs.writeFileSync(path.join(dir, 'post.html'), Buffer.alloc(size, 'x'));
+
+  const child = spawnServerChild(t, dir, 5000);
+  const port = await waitForPort(child);
+
+  // Use the real HTTP client so Transfer-Encoding: chunked framing is
+  // handled transparently -- only the *response stream* is paused, which
+  // still propagates real backpressure down to the socket.
+  const chunks = [];
+  const req = http.get({ host: '127.0.0.1', port, path: '/post.html' }, (res) => {
+    res.pause();
+    res.on('data', (c) => chunks.push(c));
+  });
+  t.after(() => req.destroy());
+  const res = await new Promise((resolve) => req.once('response', resolve));
+
+  // Give the server a moment to start streaming and fill the paused
+  // response stream's buffer (creating real TCP backpressure) before the
+  // signal arrives.
+  await new Promise((r) => setTimeout(r, 300));
+
+  process.kill(child.pid, 'SIGTERM');
+  await new Promise((r) => setTimeout(r, 200));
+
+  assert.equal(
+    isAlive(child.pid),
+    true,
+    'the process must not exit immediately on SIGTERM while a response is still in flight'
+  );
+
+  const ended = new Promise((resolve) => res.once('end', resolve));
+  res.resume();
+  await ended;
+
+  const bodyLength = Buffer.concat(chunks).length;
+  assert.equal(bodyLength, size, 'the in-flight response must arrive complete, not truncated');
+
+  await new Promise((resolve) => child.on('exit', resolve));
+});
+
+test('SIGTERM with no active connections exits promptly, not after the fallback timeout', async (t) => {
+  const dir = makePublicDir(t);
+  const child = spawnServerChild(t, dir, 5000);
+  await waitForPort(child);
+
+  const start = Date.now();
+  process.kill(child.pid, 'SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+  const elapsed = Date.now() - start;
+
+  assert.ok(
+    elapsed < 2000,
+    `an idle process must exit promptly on SIGTERM, not wait out the 5s fallback timer (took ${elapsed}ms)`
+  );
 });
