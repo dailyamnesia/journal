@@ -78,8 +78,24 @@ CSS = """
 
 
 def page(title, body_html, extra_head=FEED_LINK, description=None):
+    # `description` distinguishes "no description was ever computed" (the
+    # `None` default -- e.g. a bare page() call with nothing to say) from
+    # "a description was computed and it happened to be empty" (e.g. a post
+    # whose body opens with a heading or a fenced code block and has no
+    # leading paragraph at all, so _summary() legitimately returns ""). A
+    # truthy check (`if description else ""`) treated both the same way,
+    # silently dropping the <meta name="description"> tag for the second
+    # case -- the same "every page carries this tag" invariant this project
+    # already fixed once for the 404 page, just resurfacing through a
+    # post's actual content instead. Checking `is not None` keeps the
+    # documented "no argument at all" behavior (see
+    # test_no_description_by_default) while still emitting the tag -- with
+    # empty content -- for a description that was actually computed as
+    # empty, instead of omitting it outright.
     meta_description = (
-        f'<meta name="description" content="{html.escape(description)}">\n' if description else ""
+        f'<meta name="description" content="{html.escape(description)}">\n'
+        if description is not None
+        else ""
     )
     return f"""<!doctype html>
 <html lang="en">

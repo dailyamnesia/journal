@@ -161,6 +161,22 @@ class TestPage(unittest.TestCase):
             '<meta name="description" content="A &quot;quoted&quot; claim &amp; more">', out
         )
 
+    def test_a_genuinely_empty_description_still_gets_a_tag(self):
+        # description=None (the default, tested above) means "nothing was
+        # ever computed" and correctly omits the tag entirely. But
+        # _summary() can legitimately compute a real, non-None answer that
+        # happens to be "" -- a post whose body opens with a heading or a
+        # fenced code block and never reaches a leading plain-text
+        # paragraph (see the next test). A truthiness check on
+        # `description` used to treat that the same as the None case,
+        # silently dropping the <meta name="description"> tag for a page
+        # that *did* compute a description, just an empty one -- the same
+        # "every page gets this tag" invariant already enforced for the
+        # 404 page, reached through a post's own content this time instead
+        # of a missing argument.
+        out = build_site.page("Title", "<p>Body</p>", description="")
+        self.assertIn('<meta name="description" content="">', out)
+
 
 class TestRenderMarkdown(unittest.TestCase):
     def test_single_paragraph(self):
@@ -331,6 +347,16 @@ class TestSummary(unittest.TestCase):
         self.assertTrue(summary.endswith("…"))
         self.assertLessEqual(len(summary), 281)
         self.assertNotIn("  ", summary)
+
+    def test_empty_for_a_post_with_no_leading_paragraph(self):
+        # A post that opens directly with a fenced code block, with no
+        # plain-text paragraph before it, has no first paragraph to
+        # summarize -- _summary() falls through every branch and returns
+        # "". This is the real-world case that reaches TestPage's
+        # test_a_genuinely_empty_description_still_gets_a_tag: such a
+        # post's own page() call is handed description="", not None.
+        body = "```\nsome code, no leading prose\n```\n"
+        self.assertEqual(build_site._summary(body), "")
 
     def test_strips_blockquote_marker(self):
         # render_markdown() has treated "> " as a real blockquote since
