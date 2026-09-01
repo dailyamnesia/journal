@@ -357,6 +357,29 @@ if lock_file_was_replaced; then
 fi
 
 echo "== syncing content to $LIVE_PUBLIC =="
+# The post-count guard above deliberately treats "$LIVE_PUBLIC/posts doesn't
+# exist" as a legitimate, expected state on a genuine first-ever deploy
+# (OLD_POST_COUNT=0, guard passes through) -- but that guard only decides
+# whether to proceed, it never actually prepares $LIVE_PUBLIC for the rsync
+# passes below to write into, and rsync itself only ever creates one missing
+# leaf directory component, not a whole missing chain. On a truly fresh host
+# where $LIVE_ROOT (/srv/dailyamnesia) already exists from initial
+# provisioning (server.js and the systemd unit placed there by hand) but
+# nothing has ever created $LIVE_PUBLIC itself (no deploy has run yet), both
+# "$LIVE_PUBLIC" and "$LIVE_PUBLIC/posts" are missing at once, and the very
+# first rsync pass below fails outright with "mkdir ... failed: No such file
+# or directory", killed by `set -e` with a bare rsync error instead of this
+# script's own "FAILED:" messaging or $RECOVERY_HINT -- the exact "real first
+# deploy" case the guard above claims to support never actually reaches a
+# working sync. Reproduced directly: a scratch $LIVE_ROOT with no public/
+# subdir, run through deploy.sh's real three rsync lines unmodified (sudo
+# stripped, since the scratch dirs need no privilege), failed with rsync
+# exit code 11 on the very first pass, matching this exact scenario; adding
+# `mkdir -p "$LIVE_PUBLIC/posts"` first (harmless and a no-op on every
+# non-first deploy, since the directories already exist by then) let the
+# identical repro complete all three passes successfully.
+sudo mkdir -p "$LIVE_PUBLIC/posts"
+
 # --delete-delay, not plain --delete: plain --delete defaults to
 # delete-during, which removes each now-extraneous destination file as
 # rsync gets to it, interleaved with (and not necessarily after) copying
