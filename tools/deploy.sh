@@ -439,6 +439,35 @@ sudo mkdir -p "$LIVE_PUBLIC/posts"
 # repro with all three passes, stopping after each one in turn, found no
 # point where a live link resolved to a missing file, unlike the two-pass
 # version.
+#
+# Pass 1 itself isn't internally atomic across the many files one `rsync`
+# invocation can touch, though: rsync transfers files in sorted order (the
+# same fact the top-level/posts split above relies on), and build_site.py
+# regenerates every post's prev/next nav on every build, not just the ones
+# that changed. Adding a new latest post rewrites its immediate,
+# alphabetically-earlier neighbor's page to link forward to the new slug —
+# and since that neighbor (earlier date, earlier filename) sorts before
+# the new post (later date, later filename), the neighbor's page, already
+# advertising a "next" link to the brand-new slug, can go live before the
+# new slug's own file has finished transferring, for however long that
+# transfer takes. A process death in that exact window (the same
+# TERM/OOM/disk-full causes already covered above) leaves a live link to a
+# live 404 indefinitely — entirely within pass 1, never reaching the
+# pass-2/pass-3 ordering the rest of this comment block protects.
+# Reproduced directly: a scratch posts/ dir with an old post B and a large
+# new post C, where B's rebuilt page links to C — running a single
+# `rsync -a` of the whole tree throttled with --bwlimit showed B's updated
+# content (linking to C) already live while C's own file didn't exist yet,
+# for the whole multi-second transfer. Splitting pass 1 into two closes
+# it: first `--ignore-existing` (copies only files not yet present live —
+# genuinely new posts, which nothing can be linking to yet, since nothing
+# from this deploy has gone live before this sub-pass runs), then the
+# unrestricted sync (which updates existing pages, including neighbor nav
+# links, now safe since anything they might newly reference already went
+# live in the sub-pass before it). Re-running the identical repro through
+# both sub-passes in order found no point where a live page linked to a
+# not-yet-existing one.
+sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
 sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
 sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
