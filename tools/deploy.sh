@@ -207,6 +207,41 @@ echo "== running node tests =="
 node --test "$BUILD_SRC/tests/server.test.js"
 
 BUILD_DIR="$(mktemp -d)"
+# mktemp -d always creates its directory mode 0700 (rwx------), regardless of
+# this shell's own umask -- build_site.py never chmods $BUILD_DIR itself (it
+# only ever creates the "posts" subdirectory under it and writes files
+# directly into it, both of which do pick up this shell's ordinary umask), so
+# left alone, $BUILD_DIR's own top-level mode stays 0700 all the way through
+# the sync below. The third rsync pass a few dozen lines down
+# (`rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"`)
+# syncs $BUILD_DIR's *contents* into the already-existing $LIVE_PUBLIC, but -a
+# (which includes -p, preserve permissions) also copies the source root's own
+# directory mode onto the destination root, even though $LIVE_PUBLIC already
+# existed beforehand with a correct, world-readable mode -- so every single
+# deploy silently clobbered $LIVE_PUBLIC's own top-level mode down to 0700, no
+# matter what it was before. The subsequent `chown -R webapp:webapp` never
+# touches mode bits, only ownership, so nothing downstream ever corrected it.
+# This went unnoticed because it doesn't break the live site: server.js runs
+# as webapp, which chown just made the owner, and an owner can always read
+# its own files/traverse its own directories regardless of the mode's
+# group/other bits -- but it silently locks out anyone else (a different
+# admin account, a future backup/monitoring process) from even listing
+# $LIVE_PUBLIC, let alone reading the individually-644/755 files inside it,
+# with no error or warning anywhere. Confirmed directly: a scratch $BUILD_DIR
+# from a bare `mktemp -d`, built via the real build_site.py and synced with
+# deploy.sh's real three rsync passes onto a fresh, correctly-755
+# $LIVE_PUBLIC, left it at 0700 afterward -- reproducing the exact drift
+# (0700 top-level dir, 0755 posts/, 0644 files) found live on
+# /srv/dailyamnesia/public on this very host. chmod-ing $BUILD_DIR to 0755
+# right here, before anything is written into it, gives the top-level rsync
+# pass a correctly-permissioned source to copy from instead, and -- since
+# rsync -a syncs the destination root's mode to match the source root's on
+# every run -- also self-heals $LIVE_PUBLIC back to 0755 on the very next
+# deploy, with no separate one-off fix needed on the live host. Re-running
+# the identical repro with this chmod in place left $LIVE_PUBLIC at 0755
+# throughout, whether the destination started already-correct or already
+# drifted to 0700.
+chmod 755 "$BUILD_DIR"
 
 echo "== building site =="
 python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"
