@@ -548,6 +548,27 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("date", str(ctx.exception))
 
+    def test_non_utf8_file_names_the_file(self):
+        # A post accidentally saved with a stray non-UTF-8 byte (e.g. a
+        # Windows-1252 smart quote pasted from a word processor) raised a
+        # bare UnicodeDecodeError with no file path in its message --
+        # "'utf-8' codec can't decode byte 0xff in position 68: invalid
+        # start byte" -- unlike every other failure mode in this function,
+        # which all deliberately prefix `path` for exactly this reason.
+        # UnicodeDecodeError is itself a ValueError subclass, so the
+        # exception *type* a caller sees was never the problem; with 100+
+        # real posts, it's the missing path in the *message* that turns a
+        # one-file typo into a build failure nobody can immediately place.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_bytes(
+                b'---\ntitle: "Bad Bytes"\ndate: 2026-01-01\n---\n'
+                b"Body with a stray byte: \xff here.\n"
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+
     def test_quoted_value_padded_with_whitespace_inside_the_quotes_is_trimmed(self):
         # session 146 fixed a *whitespace-only* quoted value (`title: "   "`)
         # slipping past the required-key check as truthy. The narrower
@@ -780,6 +801,16 @@ class TestParseCharter(unittest.TestCase):
             path.write_text("Rule one.\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 build_site.parse_charter(path)
+
+    def test_non_utf8_file_names_the_file(self):
+        # Same gap as parse_post()'s own non-UTF-8 handling: a raw
+        # UnicodeDecodeError never names the file it choked on.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_bytes(b"# Charter\n\nRule with a stray byte: \xff here.\n")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_charter(path)
+            self.assertIn(str(path), str(ctx.exception))
 
     def test_actual_charter_parses(self):
         # The real CHARTER.md this project runs on should render cleanly

@@ -141,7 +141,22 @@ def _first_commit_time(path):
 
 
 def parse_post(path):
-    text = path.read_text(encoding="utf-8")
+    # UnicodeDecodeError (e.g. a post accidentally saved with Windows-1252
+    # smart quotes, or any other stray non-UTF-8 byte) is itself a
+    # ValueError subclass, so it already propagated out of this function
+    # without changing its exception type -- but its message is whatever
+    # the codec produced ("'utf-8' codec can't decode byte 0xff in position
+    # 68: invalid start byte"), which never names the offending file. Every
+    # other failure mode in this function -- missing frontmatter, an
+    # unclosed '---', a missing/blank required key, a malformed date --
+    # deliberately prefixes its message with `path` for exactly this
+    # reason: with 100+ posts in the real directory, a build failure has to
+    # point at which file broke it, not just how. Re-raising here closes
+    # the one call site that skipped that convention.
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path}: not valid UTF-8: {e}") from None
     if not text.startswith("---\n"):
         raise ValueError(f"{path}: missing frontmatter")
     end = text.find("\n---\n", 4)
@@ -230,7 +245,13 @@ def parse_charter(path=CHARTER_PATH):
     """CHARTER.md's own leading `# Title` line becomes the page title (the
     site's markdown subset only renders `##`-and-deeper as headings), the
     rest is rendered like a post body."""
-    text = path.read_text(encoding="utf-8")
+    # Same rule as parse_post() above: name the file in the error rather
+    # than let a raw UnicodeDecodeError (itself a ValueError, just one with
+    # no path in its message) pass through unlabeled.
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path}: not valid UTF-8: {e}") from None
     title_line, _, body = text.partition("\n")
     if not title_line.startswith("# "):
         raise ValueError(f"{path}: expected a leading '# Title' line")
