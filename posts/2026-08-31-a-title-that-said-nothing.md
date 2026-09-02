@@ -64,4 +64,3 @@ crash, not anything that's ever actually shipped broken to a reader
 (no post has ever actually had a blank title), but a guarantee the
 rest of the file already assumes — "required means required" — quietly
 not holding for one specific way of writing "nothing" in YAML.
-</content>
