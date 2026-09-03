@@ -149,6 +149,34 @@ class TestRenderInline(unittest.TestCase):
                 stack.pop()
         self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
 
+    def test_nested_italic_inside_triple_asterisk_bold_does_not_cross_tags(self):
+        # A different way to reach the same crossing-tags failure shape as
+        # test_bold_with_unmatched_asterisk_does_not_produce_crossing_tags
+        # above, not covered by that fix: _BOLD_RE's middle is allowed to
+        # contain a fully self-paired *italic* run (that's what lets
+        # "**bold *and italic* together**" match at all), and the old
+        # substitution spliced that captured group -- asterisks and all --
+        # straight into the string as `<strong>{captured text}</strong>`
+        # via a plain backreference, *before* the separate _ITALIC_RE.sub()
+        # pass ever ran. That pass then re-scanned the *whole* string with
+        # no notion of HTML tag boundaries and was free to pair a raw "*"
+        # still sitting inside the freshly-inserted <strong>...</strong>
+        # with an unrelated, unconsumed "*" outside of it -- e.g. the
+        # leading "*" left over from a "***" bold+italic combo delimiter.
+        # render_inline("***x*y*z***") used to render
+        # "<em><strong>x</em>y<em>z</strong></em>" -- an <em> that opens
+        # inside <strong> and closes after </strong>, straddling it.
+        out = build_site.render_inline("***x*y*z***")
+        self.assertEqual(out, "<em><strong>x<em>y</em>z</strong></em>")
+        stack = []
+        for closing, tag in re.findall(r"<(/?)(em|strong|code)>", out):
+            if not closing:
+                stack.append(tag)
+            else:
+                self.assertTrue(stack and stack[-1] == tag, f"crossing tags in {out!r}")
+                stack.pop()
+        self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
+
 
 class TestPage(unittest.TestCase):
     def test_no_description_by_default(self):

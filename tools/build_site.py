@@ -373,13 +373,38 @@ _BOLD_RE = re.compile(r"\*\*([^*\s](?:(?:[^*]|" + _ITALIC_INNER + r")*[^*\s])?)\
 _ITALIC_RE = re.compile(r"\*([^*\s](?:[^*]*[^*\s])?)\*")
 
 
+def _bold_replace(match):
+    # Convert any nested *italic* run inside the bold match's own captured
+    # text to <em> right here, before the <strong> wrapper is spliced back
+    # into the string -- not left for the later, separate _ITALIC_RE.sub()
+    # pass below to find on its own. That pass runs over the *entire*
+    # string with no notion of HTML tag boundaries (same as _BOLD_RE.sub()
+    # itself), so any raw "*" characters this match's captured group still
+    # contained -- there because _BOLD_RE's own middle allows a
+    # self-contained nested *...* run, e.g. the "*y*" in "***x*y*z***" --
+    # sat there as ordinary text once <strong>...</strong> was inserted,
+    # free for _ITALIC_RE to pair with an unrelated "*" *outside* this
+    # match entirely (e.g. a leftover, unconsumed "*" from a triple-
+    # asterisk bold+italic combo just before it). That produced crossing,
+    # invalid markup instead of well-formed nesting:
+    # render_inline("***x*y*z***") used to render
+    # "<em><strong>x</em>y<em>z</strong></em>" -- an <em> that opens inside
+    # <strong> and closes after it, straddling the </strong> boundary.
+    # Resolving the nested italic before the <strong> tags ever reach the
+    # string closes the gap: by the time _ITALIC_RE.sub() runs afterward,
+    # there's no raw "*" left inside this match's output for it to trip
+    # over.
+    inner = _ITALIC_RE.sub(r"<em>\1</em>", match.group(1))
+    return f"<strong>{inner}</strong>"
+
+
 def render_inline(text):
     text = html.escape(text)
 
     # Code spans are stashed out and restored after bold/italic run, so
     # e.g. `*not italic*` isn't itself reinterpreted as markdown.
     text, code_spans = _stash_code_spans(text)
-    text = _BOLD_RE.sub(r"<strong>\1</strong>", text)
+    text = _BOLD_RE.sub(_bold_replace, text)
     text = _ITALIC_RE.sub(r"<em>\1</em>", text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
