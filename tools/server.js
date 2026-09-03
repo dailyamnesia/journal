@@ -289,10 +289,41 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // truncating any response currently streaming to a real visitor, with no
 // error on their end beyond a cut-off download. `server.close()` stops
 // accepting new connections and waits for in-flight ones to finish
-// naturally, but won't wait forever on an idle keep-alive connection, so
-// it's bounded by a fallback timer well inside systemd's default 90s
-// TimeoutStopSec.
-function installGracefulShutdown(server, timeoutMs = 10000) {
+// naturally; the fallback timer here exists only so a connection that never
+// finishes (a hung client, or a slow-loris-style abuse of exactly this
+// grace period) can't block a deploy's restart forever, bounded well inside
+// systemd's default 90s TimeoutStopSec.
+//
+// That fallback used to be 10 seconds -- comfortably enough for the test
+// suite's own repro (session 154), which only paused its client's reads for
+// a fraction of a second, but nowhere near enough for a genuinely slow real
+// client: a throttled mobile connection, or simply someone downloading a
+// large post over a slow link, easily takes longer than 10 real seconds.
+// Any deploy landing while such a client was mid-download force-exited the
+// process at the 10s mark regardless of the transfer still being alive and
+// actively wanted -- the exact truncation this function exists to prevent,
+// just reopened for anything slower than that one fixed number. Reproduced
+// directly: a real child server process, a real HTTP client deliberately
+// draining a 40MB response slowly (paused well past a shortened fallback
+// window used only to keep the repro fast), SIGTERM'd mid-transfer -- the
+// process force-exited at the fallback regardless, delivering only a few MB
+// of the 40MB to the still-connected, still-reading client.
+//
+// Raised to 60 seconds -- comfortably under systemd's 90s TimeoutStopSec,
+// the same margin the original 10s value was already reasoned against, just
+// large enough to cover an ordinary slow connection rather than only a fast
+// one. This doesn't slow down the ordinary case where nothing is actively
+// transferring: confirmed directly that `server.close()`'s own callback
+// already resolves within a few milliseconds once nothing is genuinely in
+// flight, even with an idle keep-alive connection still technically open --
+// so raising the fallback only widens the window for a connection that's
+// truly still active, not the every-deploy default case where it never
+// mattered at all. Exported as a named constant, not just an inline default,
+// so a regression test can pin the value directly rather than needing an
+// impractical real 60-second test to exercise it end to end.
+const SHUTDOWN_FALLBACK_MS = 60000;
+
+function installGracefulShutdown(server, timeoutMs = SHUTDOWN_FALLBACK_MS) {
   function shutdown() {
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), timeoutMs).unref();
@@ -312,4 +343,5 @@ module.exports = {
   CONTENT_TYPES,
   PUBLIC_DIR,
   installGracefulShutdown,
+  SHUTDOWN_FALLBACK_MS,
 };

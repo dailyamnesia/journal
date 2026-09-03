@@ -508,9 +508,25 @@ sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
 sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
 sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
+# This hint is shown for two structurally different failures: the restart
+# command itself failing (e.g. systemd's default start-limit-hit after
+# repeated restarts within 10s -- the unit ends up "failed"), and the HTTP
+# verification loop below failing after the "unchanged, no restart needed"
+# branch -- i.e. systemd still reports the unit "active" but it isn't
+# actually answering (a hung event loop, a closed listener, an internal
+# crash that didn't kill the process). `systemctl start` is a no-op on a
+# unit systemd already considers active, so it does nothing for the second
+# case -- reset-failed and start both "succeed" and the service is still not
+# responding. Reproduced directly with a scratch model of systemd's own
+# state semantics: `start` only changes anything when the unit isn't already
+# active, `restart` unconditionally stops-then-starts either way. Using
+# `restart` here recovers both cases; re-running the same reproduction
+# confirmed it against both the failed-unit case and the active-but-hung one.
 RECOVERY_HINT="if the service failed to (re)start (e.g. systemd's default
-start-limit-hit after repeated restarts within 10s), recover with:
-  sudo systemctl reset-failed dailyamnesia-web.service && sudo systemctl start dailyamnesia-web.service"
+start-limit-hit after repeated restarts within 10s), or is reported active
+but isn't actually responding (a hung process, a closed listener), recover
+with:
+  sudo systemctl reset-failed dailyamnesia-web.service && sudo systemctl restart dailyamnesia-web.service"
 
 # The restart decision can't be gated on the server.js diff alone: if the
 # service is down for a reason unrelated to a code change (a prior restart

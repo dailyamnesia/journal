@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { resolveRequestPath, createRequestHandler, CONTENT_TYPES, installGracefulShutdown } = require('../tools/server.js');
+const { resolveRequestPath, createRequestHandler, CONTENT_TYPES, installGracefulShutdown, SHUTDOWN_FALLBACK_MS } = require('../tools/server.js');
 
 function makePublicDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-'));
@@ -981,5 +981,64 @@ test('SIGTERM with no active connections exits promptly, not after the fallback 
   assert.ok(
     elapsed < 2000,
     `an idle process must exit promptly on SIGTERM, not wait out the 5s fallback timer (took ${elapsed}ms)`
+  );
+});
+
+// The production fallback used to be 10 seconds -- enough for this test
+// file's own repro above, which only pauses its client's reads for a
+// fraction of a second, but nowhere near enough for a genuinely slow real
+// client: a throttled mobile connection, or simply someone downloading a
+// large post over a slow link, easily takes longer than 10 real seconds.
+// Any deploy landing while such a client was mid-download force-exited the
+// process at the 10s mark regardless of the transfer still being alive and
+// actively wanted -- the exact truncation this function exists to prevent,
+// just reopened for anything slower than that one fixed number. Reproduced
+// directly (not as an automated test -- a real reproduction of this needs a
+// fallback long enough to be realistic, which makes it impractically slow
+// to run on every test invocation): a real child server process, a real
+// HTTP client deliberately draining a 40MB response slowly, paused well
+// past a shortened fallback window, SIGTERM'd mid-transfer -- the old code
+// force-exited at the fallback regardless, delivering only a few MB of the
+// 40MB to the still-connected, still-reading client. Raised to 60 seconds,
+// comfortably under systemd's 90s TimeoutStopSec. This regression-guards
+// the actual value rather than the mechanism (already covered by the tests
+// above and below, both of which pass their own explicit, test-fast
+// fallback and would pass identically before or after this fix, since the
+// bug was in the *default*, not the logic): a future change that quietly
+// shrinks the constant back down wouldn't be caught by either of those.
+test('the production fallback default gives a slow client meaningfully more than the original 10s', () => {
+  assert.ok(
+    SHUTDOWN_FALLBACK_MS >= 60000,
+    `SHUTDOWN_FALLBACK_MS should stay comfortably above the original, too-short 10s default (currently ${SHUTDOWN_FALLBACK_MS}ms)`
+  );
+});
+
+// Neither test above exercises what happens when a response never finishes
+// at all -- the exact case the fallback exists to bound. Without this, a
+// connection that's active but genuinely stuck (or a hostile client
+// deliberately never finishing) could block a deploy's restart forever.
+test('SIGTERM still force-exits within the fallback window if a response never finishes', async (t) => {
+  const dir = makePublicDir(t);
+  fs.writeFileSync(path.join(dir, 'post.html'), Buffer.alloc(5 * 1024 * 1024, 'x'));
+
+  const timeoutMs = 1000;
+  const child = spawnServerChild(t, dir, timeoutMs);
+  const port = await waitForPort(child);
+
+  const req = http.get({ host: '127.0.0.1', port, path: '/post.html' }, (res) => {
+    res.pause();
+  });
+  t.after(() => req.destroy());
+  await new Promise((resolve) => req.once('response', resolve));
+  await new Promise((r) => setTimeout(r, 200));
+
+  const start = Date.now();
+  process.kill(child.pid, 'SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+  const elapsed = Date.now() - start;
+
+  assert.ok(
+    elapsed < timeoutMs + 1000,
+    `a response that never finishes must not block shutdown past the fallback timeout (took ${elapsed}ms for a ${timeoutMs}ms timeout)`
   );
 });
