@@ -51,6 +51,24 @@ function createRequestHandler(publicDir) {
       return res.end('bad request');
     }
 
+    // A trailing slash on a URL is a directory reference ("/posts/foo.html/"
+    // names a directory called "foo.html" inside posts/, not the file
+    // "foo.html" itself), and this server never serves directory listings --
+    // every directory-shaped request 404s below via the isFile() check.
+    // resolveRequestPath preserves that trailing slash as-is into `filePath`,
+    // but fs.realpath is lenient about a trailing slash on a path that's
+    // actually a regular file: it silently drops the slash and resolves
+    // straight through, unlike a plain POSIX open() (which would fail with
+    // ENOTDIR). Without this flag, that leniency let a URL that
+    // unambiguously names a directory instead serve the *file* of the same
+    // name with a 200 -- not just a cosmetic status-code mismatch, since real
+    // pages link to each other with relative URLs a browser resolves against
+    // the request URL's own directory; the extra trailing slash shifts what
+    // the browser considers that directory to be, breaking every relative
+    // link on an otherwise-200 page. Recorded here, before realpath strips
+    // it, and checked once `real` is known to be a file below.
+    const hadTrailingSlash = filePath.endsWith(path.sep);
+
     // Tracked and listened for right here, before any async work starts,
     // rather than attaching res.on('close', ...) down next to where the
     // stream gets created. fs.realpath and fs.stat below are both async, so
@@ -226,7 +244,7 @@ function createRequestHandler(publicDir) {
         if (openErr) return serveNotFound();
         fs.fstat(fd, (statErr, stats) => {
           if (closed) return fs.close(fd, () => {});
-          if (statErr || !stats.isFile()) {
+          if (statErr || !stats.isFile() || hadTrailingSlash) {
             fs.close(fd, () => {});
             return serveNotFound();
           }

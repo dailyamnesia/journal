@@ -455,6 +455,45 @@ test('server: a request that resolves to a real directory gets a clean 404, not 
   });
 });
 
+test('server: a real file requested with a trailing slash gets a 404, not the file with broken relative links', async (t) => {
+  // Regression test: a trailing slash on a URL denotes a directory reference
+  // ("/posts/hello.html/" reads, by URL convention, as "the directory named
+  // hello.html inside posts/"), and this server never serves directory
+  // listings -- every other directory-shaped request already 404s (see the
+  // test above). But resolveRequestPath preserves that trailing slash
+  // untouched into the path it hands to fs.realpath, and fs.realpath is
+  // lenient about a trailing slash on a path that's actually a regular file:
+  // it silently drops the slash and resolves straight through to the file,
+  // rather than failing the way a plain POSIX open() would (ENOTDIR). The
+  // handler then opens that realpath'd, slash-free result and happily
+  // streams the file back with a 200 -- so a URL that unambiguously names a
+  // directory instead serves the *file* of the same name.
+  //
+  // This isn't just a cosmetic status-code mismatch: real post pages link to
+  // each other with *relative* URLs (e.g. "../index.html", a sibling post's
+  // bare filename), which a browser resolves against the request URL's own
+  // directory. A trailing slash changes what the browser considers that
+  // directory to be -- for "/posts/hello.html" it's "/posts/", but for
+  // "/posts/hello.html/" it's "/posts/hello.html/" itself, one level deeper.
+  // Every relative link on the page then resolves to the wrong place and
+  // 404s, even though the page causing it loaded with a 200. A stray trailing
+  // slash (a mistyped URL, a bot or link-checker that always appends one, a
+  // bad backlink) silently serves this broken version instead of a clean
+  // 404 pointing the visitor back to a working URL.
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/posts/hello.html/');
+    assert.equal(res.status, 404);
+    assert.match(res.body, /missing/);
+    // Requesting the same file without the trailing slash must still work
+    // normally -- this is about the trailing slash specifically, not about
+    // breaking ordinary file serving.
+    const withoutSlash = await get(port, '/posts/hello.html');
+    assert.equal(withoutSlash.status, 200);
+    assert.match(withoutSlash.body, /hello/);
+  });
+});
+
 test('server: a file swapped for a directory mid-request never abandons the response', async (t) => {
   // Regression test: the previous fix (above) rejected a direct request for
   // a known directory via fs.stat(real, ...), but a separate fs.open of

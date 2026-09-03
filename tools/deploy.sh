@@ -178,7 +178,25 @@ cleanup() {
   # the identical double-TERM timing, let `wait` block until the child
   # actually finished and cleanup run to completion every time — the marker
   # directory was gone afterward, as intended.
-  trap '' TERM INT
+  #
+  # HUP and QUIT need the same ignore, not just a repeat of whichever signal
+  # started cleanup: the operator persona this whole fix is built around
+  # doesn't necessarily send the same signal twice -- someone who sent one
+  # TERM, saw no immediate effect, and then closed their terminal (SIGHUP to
+  # this script's whole session) or hit Ctrl-\ out of frustration (SIGQUIT)
+  # is at least as plausible as sending TERM again, and a dropped SSH
+  # session mid-deploy delivering a single HUP is an even more ordinary way
+  # for this to happen with no impatience involved at all. Neither was
+  # covered by `trap '' TERM INT` alone. Reproduced directly: a scratch
+  # harness matching this exact trap-cleanup shape, sent TERM (entering
+  # cleanup, matching the pkill+wait window already described above) and
+  # then a single HUP about half a second later, died immediately -- the
+  # marker file cleanup writes last was never created, leaking
+  # $BUILD_SRC's worktree registration and $BUILD_DIR the same way an
+  # unprotected double-TERM did before that fix. Adding HUP and QUIT to
+  # this same ignore-trap and rerunning the identical TERM-then-HUP timing
+  # let cleanup run to completion every time.
+  trap '' TERM INT HUP QUIT
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
   git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
