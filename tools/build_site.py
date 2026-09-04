@@ -222,8 +222,23 @@ def parse_post(path):
         # Unicode formatting characters (e.g. zero-width spaces) is just as
         # broken too, but survives every `.strip()` call above untouched --
         # see `_is_blank()` for why plain `not meta.get(required)` alone
-        # still misses it.
-        if not meta.get(required) or _is_blank(meta[required]):
+        # still misses it. A value made entirely of raw control characters
+        # (e.g. a stray ESC from a pasted terminal log, `title: "\x01"`) is
+        # just as broken too, but for a different reason than the Unicode
+        # formatting case: `_is_blank()` doesn't consider it blank at all --
+        # a C0 control character is category 'Cc', not the 'Cf' the
+        # zero-width-space fix checks for, and it isn't whitespace either --
+        # so this check used to pass it straight through. The value then
+        # reached the return dict below, where `_strip_invalid_xml_chars()`
+        # (there to keep such bytes out of feed.xml) stripped that same
+        # character back out, leaving the *stored* title empty even though
+        # this check had just approved it as non-blank -- the identical
+        # blank-<title>/<h1>/index-link failure the two fixes above already
+        # closed, just reached through a mismatch between what this check
+        # inspects and what actually reaches the page. Running `_is_blank()`
+        # against the already-sanitized value keeps this check in sync with
+        # what the post will actually render.
+        if not meta.get(required) or _is_blank(_strip_invalid_xml_chars(meta[required])):
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     # A non-empty but wrongly-formatted date (e.g. "Aug 30, 2026", or a
     # copy-paste of "08/30/2026") passes the check above and used to flow

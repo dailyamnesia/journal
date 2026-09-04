@@ -548,6 +548,36 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_control_character_only_title_names_the_file(self):
+        # A title made entirely of raw control bytes (e.g. a stray ESC from
+        # a pasted terminal log -- the exact scenario _strip_invalid_xml_chars()
+        # itself was written to guard against) is just as blank-looking as
+        # the whitespace-only and zero-width-only cases already caught
+        # above, but slips past _is_blank() through a gap neither of those
+        # fixes closed: _is_blank() only treats a character as blank if
+        # `str.isspace()` says so or it's Unicode category 'Cf' (invisible
+        # formatting characters). A C0 control character like U+0001 is
+        # neither -- it's category 'Cc', not whitespace -- so _is_blank()
+        # sees one "real" character and the required-key check passes. The
+        # title then reaches the return dict, where
+        # _strip_invalid_xml_chars() (applied to close the *separate*
+        # feed.xml well-formedness gap) strips that same control character
+        # right back out, leaving `post["title"]` an empty string: a post
+        # that built "successfully" with a blank, inaccessible
+        # <title>/<h1> and an index link with no visible text at all --
+        # the same failure mode as the two prior fixes, just via a third
+        # character class neither of them checked for.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_bytes(
+                b'---\ntitle: "\x01"\ndate: 2026-01-01\n---\n'
+                b"Body with a control-character title.\n"
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight
