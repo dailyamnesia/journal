@@ -1155,6 +1155,72 @@ class TestBuildStripsControlCharactersFromHtmlOutput(unittest.TestCase):
         self.assertNotIn("\x1b", post_page)
 
 
+class TestBuildRemovesStalePostPages(unittest.TestCase):
+    """index.html, feed.xml, charter.html, and 404.html are all rewritten in
+    full on every build, so they can never carry stale content. A post page
+    used to be different: build() only ever wrote a page for each *current*
+    source file, never removed one for a source file that's gone -- so
+    renaming or deleting a post and rebuilding into the same output
+    directory (the ordinary local workflow: `python3 tools/build_site.py`
+    writes into `_site/` every time, and README.md says to open
+    `_site/index.html` directly, nothing about wiping it first) left the
+    old post's page sitting on disk indefinitely: unlinked from the index
+    and feed, but still live at its old URL with its last-rendered content.
+    deploy.sh's own rsync passes happen to clean this up in production
+    (`--delete-delay`), but that's the deploy pipeline's job, not this
+    script's, and nothing plays that role for a local rebuild."""
+
+    def test_removed_posts_source_file_orphaned_page_is_deleted_on_rebuild(self):
+        orig_posts_dir = build_site.POSTS_DIR
+        orig_static_dir = build_site.STATIC_DIR
+        orig_charter_path = build_site.CHARTER_PATH
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                posts_dir = d / "posts"
+                posts_dir.mkdir()
+                static_dir = d / "static"
+                static_dir.mkdir()
+                (static_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+                (d / "CHARTER.md").write_text("# Charter\n\nA rule.\n", encoding="utf-8")
+                first = posts_dir / "2026-01-01-first-post.md"
+                first.write_text(
+                    '---\ntitle: "First post"\ndate: 2026-01-01\n---\nHello, first post.\n',
+                    encoding="utf-8",
+                )
+                (posts_dir / "2026-01-02-second-post.md").write_text(
+                    '---\ntitle: "Second post"\ndate: 2026-01-02\n---\nHello, second post.\n',
+                    encoding="utf-8",
+                )
+
+                build_site.POSTS_DIR = posts_dir
+                build_site.STATIC_DIR = static_dir
+                build_site.CHARTER_PATH = d / "CHARTER.md"
+
+                out = d / "_site"
+                build_site.build(out)
+                first_page = out / "posts" / "2026-01-01-first-post.html"
+                second_page = out / "posts" / "2026-01-02-second-post.html"
+                self.assertTrue(first_page.exists())
+                self.assertTrue(second_page.exists())
+
+                # The first post's source file is renamed/deleted, then the
+                # site is rebuilt into the SAME output directory -- no
+                # `rm -rf _site/` in between, matching what README.md
+                # actually documents as the local build workflow.
+                first.unlink()
+                build_site.build(out)
+                first_page_still_exists = first_page.exists()
+                second_page_still_exists = second_page.exists()
+        finally:
+            build_site.POSTS_DIR = orig_posts_dir
+            build_site.STATIC_DIR = orig_static_dir
+            build_site.CHARTER_PATH = orig_charter_path
+
+        self.assertFalse(first_page_still_exists)
+        self.assertTrue(second_page_still_exists)
+
+
 class TestBuildLinksAdjacentPosts(unittest.TestCase):
     """Every post page should offer a way onward without a trip through the
     index, and the chain has to run in reading order end to end."""

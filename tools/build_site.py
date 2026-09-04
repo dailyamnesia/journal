@@ -680,6 +680,26 @@ def build(out_dir):
     # order has no relationship to when a post was actually written.
     posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
 
+    # index.html, feed.xml, charter.html, and 404.html are all rewritten in
+    # full below on every build, so they can never go stale. A post page is
+    # different: it's only ever added, never removed, so renaming or
+    # deleting a post's source file leaves its *old* output file sitting in
+    # out_dir/posts/ untouched by this build. That page is already unlinked
+    # from the index/feed the moment this build finishes, but it's still
+    # live on disk at its old URL, serving whatever it last rendered to,
+    # indefinitely -- deploy.sh's own rsync passes happen to sweep this up
+    # in production (`--delete-delay`), but that's a property of the deploy
+    # pipeline, not of this script, and the local workflow README.md
+    # documents (`python3 tools/build_site.py`, then open `_site/index.html`
+    # directly) rebuilds into the same output directory every time with no
+    # such cleanup. Removing every post page that no longer corresponds to
+    # a current source file keeps out_dir/posts/ an exact mirror of
+    # posts/*.md on every build, not just an ever-growing superset of it.
+    current_slugs = {post["slug"] for post in posts}
+    for stale in (out_dir / "posts").glob("*.html"):
+        if stale.stem not in current_slugs:
+            stale.unlink()
+
     for i, post in enumerate(posts):
         content = render_markdown(post["body"], source=f"posts/{post['slug']}.md")
         # posts is newest-first, so the next entry in the list is the older
