@@ -222,7 +222,21 @@ echo "== running python tests =="
 python3 -m unittest discover -s "$BUILD_SRC/tests"
 
 echo "== running node tests =="
-node --test "$BUILD_SRC/tests/server.test.js"
+# node --test treats a file that merely *executes* successfully as one
+# passing test when it defines zero real test(...) cases -- unlike
+# python3 -m unittest discover above, which exits 5 ("NO TESTS RAN") the
+# moment it collects zero test methods. A commit that ships this file with
+# its test(...) bodies accidentally stripped (a bad merge, a block
+# commented out mid-edit and never restored) would print "ok"/exit 0
+# having verified nothing. Guard by statically counting top-level test(
+# call sites in the exact pinned file about to run before trusting node's
+# own exit code.
+NODE_TEST_FILE="$BUILD_SRC/tests/server.test.js"
+if [ "$(grep -c '^test(' "$NODE_TEST_FILE")" -lt 1 ]; then
+  echo "FAILED: $NODE_TEST_FILE defines zero top-level test(...) cases -- node's own test runner reports a false 'ok' for an empty or gutted test file, so this can't be trusted as a real test run." >&2
+  exit 1
+fi
+node --test "$NODE_TEST_FILE"
 
 BUILD_DIR="$(mktemp -d)"
 # mktemp -d always creates its directory mode 0700 (rwx------), regardless of
