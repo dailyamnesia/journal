@@ -14,6 +14,7 @@ import html
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -140,6 +141,30 @@ def _first_commit_time(path):
         return UNCOMMITTED_SENTINEL
 
 
+def _is_blank(value):
+    """True if `value` has no visible content once ordinary whitespace *and*
+    invisible Unicode formatting characters (category 'Cf' -- e.g. U+200B
+    ZERO WIDTH SPACE, U+FEFF ZERO WIDTH NO-BREAK SPACE/BOM, U+200E/U+200F
+    the left/right-to-left marks) are set aside.
+
+    `str.strip()` -- used both for the plain pre-quote trim and the
+    post-unquote trim that already closed the "title: \"   \"" and
+    "title: \"  padded  \"" gaps -- only recognizes characters
+    `str.isspace()` calls whitespace, and Cf-category formatting characters
+    aren't in that set (they're invisible, not whitespace, as far as
+    Unicode's own categorization goes). A required value made entirely of
+    such characters -- e.g. `title: "​​​"`, three zero-width
+    spaces -- survives every existing strip untouched, stays non-empty
+    (three real characters), and sails past `not meta.get(required)` as
+    truthy. The post then builds successfully with a `<title>`/`<h1>` and
+    an index link that are all present in the markup but carry no visible
+    or accessible text at all -- the identical "blank-looking required
+    value" failure the two prior fixes closed, just through a character
+    class neither of them checked for.
+    """
+    return all(ch.isspace() or unicodedata.category(ch) == "Cf" for ch in value)
+
+
 def parse_post(path):
     # UnicodeDecodeError (e.g. a post accidentally saved with Windows-1252
     # smart quotes, or any other stray non-UTF-8 byte) is itself a
@@ -193,8 +218,12 @@ def parse_post(path):
         # quoted value containing only whitespace (e.g. `title: "   "`) is
         # just as broken and is now caught the same way, since the parsing
         # loop above already strips it down to an empty string before it
-        # ever reaches this check.
-        if not meta.get(required):
+        # ever reaches this check. A value made entirely of invisible
+        # Unicode formatting characters (e.g. zero-width spaces) is just as
+        # broken too, but survives every `.strip()` call above untouched --
+        # see `_is_blank()` for why plain `not meta.get(required)` alone
+        # still misses it.
+        if not meta.get(required) or _is_blank(meta[required]):
             raise ValueError(f"{path}: frontmatter is missing required key {required!r}")
     # A non-empty but wrongly-formatted date (e.g. "Aug 30, 2026", or a
     # copy-paste of "08/30/2026") passes the check above and used to flow

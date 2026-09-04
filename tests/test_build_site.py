@@ -523,6 +523,31 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_zero_width_only_title_names_the_file(self):
+        # A title made entirely of invisible Unicode formatting characters
+        # (category 'Cf' -- zero-width spaces here) is just as blank-looking
+        # as "title: \"   \"" (already caught above), but survives every
+        # `.strip()` call in parse_post(): `str.strip()` only trims
+        # characters `str.isspace()` calls whitespace, and a zero-width
+        # space isn't whitespace by that definition -- it's a real,
+        # non-empty character that happens to render invisibly. `not
+        # meta.get(required)` alone sees three real characters and never
+        # fires, so the post used to build successfully with a `<title>`,
+        # `<h1>`, and index link that are all present in the markup but
+        # carry no visible or accessible text. Must raise the same
+        # named-file error the blank/whitespace-only cases already do.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "​​​"\ndate: 2026-01-01\n---\n'
+                'Body with an invisible title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight
