@@ -64,6 +64,33 @@ LOCKFILE=/tmp/dailyamnesia-deploy.lock
 parent_is_flock() {
   [ "$(ps -o comm= -p "$PPID" 2>/dev/null)" = "flock" ]
 }
+# $LOCKFILE lives in /tmp: world-writable (the sticky bit only stops other
+# users from deleting or renaming an entry that's already there, not from
+# creating a new name that doesn't exist yet), at a fully predictable path.
+# `flock` opens whatever path it's given by following symlinks like any
+# other open(2) caller — it has no equivalent of O_NOFOLLOW — so any local
+# user who plants a symlink at this exact path *before* this script has ever
+# created a real lock file there (a genuine, recurring window: any host with
+# /tmp on tmpfs starts every reboot with the path missing) silently
+# redirects `flock`'s open() onto whatever path they chose. `flock -n
+# --close` never writes content, so it can't corrupt an existing file at the
+# target, but it does create-if-missing — letting an unrelated local user
+# get an empty file silently created, owned by whoever next runs this
+# perfectly ordinary deploy, at any path that user can write to but the
+# attacker couldn't. Reproduced directly: a scratch harness matching this
+# exact self-re-exec `flock` shape, run completely normally after a symlink
+# was pre-planted at its lock path pointing at a not-yet-existing file
+# elsewhere, silently created that file — nothing printed, exit 0,
+# indistinguishable from an ordinary successful run. Refusing outright when
+# $LOCKFILE already exists as a symlink (a plain, real lock file this script
+# itself creates never is one) closes the window: once a real lock file
+# exists here, the sticky bit stops any other user from ever replacing it
+# with a symlink again, so this only needs to hold once, right before the
+# path is trusted.
+if [ -L "$LOCKFILE" ]; then
+  echo "FAILED: $LOCKFILE is a symlink, not a real lock file -- refusing to use it (this script never creates it as one; something else planted it, and flock would silently follow it wherever it points)." >&2
+  exit 1
+fi
 if [ "${DAILYAMNESIA_DEPLOY_LOCKED:-}" != 1 ] || ! parent_is_flock; then
   status=0
   DAILYAMNESIA_DEPLOY_LOCKED=1 flock -n --close -E 99 "$LOCKFILE" "$REPO_ROOT/tools/deploy.sh" "$@" || status=$?
