@@ -137,7 +137,26 @@ if [ -n "$GIT_STATUS_OUTPUT" ]; then
   git status --short >&2
   exit 1
 fi
-git fetch origin main --quiet
+# Same hang risk already fixed for the python/node test suites below (session
+# 176), just at an earlier call site: `git fetch` talks to a real network
+# endpoint with no timeout of its own, and TCP accepting a connection is no
+# guarantee anything on the other end ever answers -- a stuck/overloaded git
+# host behind a load balancer or reverse proxy that completes the handshake
+# itself, or any other middlebox black-holing the response, leaves `git
+# fetch` blocked forever with nothing to time it out. That wedges this
+# script right here, still holding $LOCKFILE, silently blocking every future
+# deploy ("another deploy.sh is already running") with no FAILED message and
+# no other symptom, exactly like the two already-fixed test-suite hangs.
+# Reproduced directly: a scratch repo with `origin` pointed at a bare TCP
+# listener that accepts the connection and never responds hung `git fetch
+# origin main --quiet` indefinitely (confirmed via an external `timeout`,
+# since the command had no protection of its own). 60s is generous headroom
+# over a real fetch against a healthy remote, which completes in well under
+# a second.
+if ! timeout 60 git fetch origin main --quiet; then
+  echo "FAILED: git fetch origin main did not finish within 60s (or failed) -- a hung or unresponsive remote would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 LOCAL_REV="$(git rev-parse HEAD)"
 REMOTE_REV="$(git rev-parse origin/main)"
 if [ "$LOCAL_REV" != "$REMOTE_REV" ]; then
