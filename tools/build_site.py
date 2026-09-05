@@ -249,6 +249,18 @@ def parse_post(path):
             # closes the gap at its source so every downstream consumer
             # gets the same clean value a quoted value is supposed to carry.
             value = value[1:-1].strip()
+            # A quoted value has no other way to carry a literal quote mark
+            # than escaping it (`\"`), the same convention JSON/YAML-style
+            # quoted strings use -- e.g. a real post's own
+            # `title: "A deck named \".\" blamed the wrong thing"`, meant to
+            # render as `A deck named "." blamed the wrong thing`. Nothing
+            # above ever un-escapes that: the slice-off-the-outer-quotes
+            # step just removes the first and last characters, leaving any
+            # `\"` in the middle untouched, so the stored title kept its
+            # literal backslashes and shipped that garbled text to <title>,
+            # <h1>, the index link, and the feed entry for the real post
+            # that used this syntax.
+            value = value.replace('\\"', '"')
         meta[key.strip()] = value
     for required in ("title", "date"):
         # A key present but left blank (e.g. "date:" with nothing after it)

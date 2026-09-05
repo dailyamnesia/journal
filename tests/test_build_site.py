@@ -756,6 +756,29 @@ class TestParsePost(unittest.TestCase):
             post = build_site.parse_post(path)
             self.assertEqual(post["title"], 'He said "no"')
 
+    def test_quoted_value_with_escaped_quote_is_unescaped(self):
+        # A quoted title that needs to contain a literal quote mark has no
+        # way to say so except escaping it with a backslash (`\"`) -- the
+        # same convention JSON/YAML-style quoted strings use, and the one a
+        # real post in this journal actually reached for:
+        # `title: "A deck named \".\" blamed the wrong thing"`, meant to
+        # render as `A deck named "." blamed the wrong thing`. But the
+        # quote-stripping above (`value[1:-1].strip()`) only ever removes
+        # the outer wrapping pair; it has no notion of backslash escapes at
+        # all, so every `\"` inside survived untouched -- the stored title
+        # kept its literal backslashes, `A deck named \".\" blamed the
+        # wrong thing`, and that garbled text reached <title>, <h1>, the
+        # index link, and the feed entry for that real, live post.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-escaped-quote.md"
+            path.write_text(
+                '---\ntitle: "A deck named \\".\\" blamed the wrong thing"\n'
+                "date: 2026-01-01\n---\nBody.\n",
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], 'A deck named "." blamed the wrong thing')
+
     def test_control_character_in_title_and_body_is_stripped(self):
         # render_feed() strips characters XML 1.0 forbids (control bytes,
         # lone surrogates, U+FFFE/U+FFFF -- see _strip_invalid_xml_chars())
