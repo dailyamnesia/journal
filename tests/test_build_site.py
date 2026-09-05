@@ -1017,6 +1017,88 @@ class TestBuildOrdersSameDatePostsByCommitTime(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
 
+class TestCommitSortKeyOrdersByUtcInstant(unittest.TestCase):
+    """(date, commit_time) used to sort same-date posts by comparing
+    `commit_time` -- git's strict-ISO-8601 author date, e.g.
+    "2026-08-08T23:30:00+09:00" -- as a plain string. Two commits on the
+    same calendar date but authored under different UTC offsets don't
+    compare correctly that way: "2026-08-08T23:30:00+09:00" (14:30 UTC)
+    sorts *after* "2026-08-08T08:00:00-07:00" (15:00 UTC) as text, purely
+    because "23" > "08" as characters, even though the second commit
+    happened later in real time."""
+
+    def test_same_date_posts_ordered_by_utc_instant_not_offset_string(self):
+        orig_repo_root = build_site.REPO_ROOT
+        orig_posts_dir = build_site.POSTS_DIR
+        orig_static_dir = build_site.STATIC_DIR
+        orig_charter_path = build_site.CHARTER_PATH
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                posts_dir = repo / "posts"
+                posts_dir.mkdir()
+                static_dir = repo / "static"
+                static_dir.mkdir()
+                (static_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+                (repo / "CHARTER.md").write_text("# Charter\n\nA rule.\n", encoding="utf-8")
+
+                def git(*args, env=None):
+                    subprocess.run(
+                        ["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env
+                    )
+
+                git("init", "-q")
+                git("config", "user.email", "test@example.test")
+                git("config", "user.name", "Test")
+
+                def commit(relpath, content, at):
+                    path = repo / relpath
+                    path.write_text(content, encoding="utf-8")
+                    git("add", relpath)
+                    run_env = {**os.environ, "GIT_AUTHOR_DATE": at, "GIT_COMMITTER_DATE": at}
+                    git("commit", "-q", "-m", relpath, env=run_env)
+
+                # Authored 23:30 under UTC+9 -> 14:30 UTC: the earlier real
+                # instant, but the lexicographically *larger* offset string.
+                commit(
+                    "posts/2026-08-08-earlier-instant.md",
+                    '---\ntitle: "Earlier Instant"\ndate: 2026-08-08\n---\nWritten first.\n',
+                    "2026-08-08T23:30:00+09:00",
+                )
+                # Authored 08:00 under UTC-7 -> 15:00 UTC: the later real
+                # instant, but the lexicographically *smaller* offset string.
+                commit(
+                    "posts/2026-08-08-later-instant.md",
+                    '---\ntitle: "Later Instant"\ndate: 2026-08-08\n---\nWritten second.\n',
+                    "2026-08-08T08:00:00-07:00",
+                )
+
+                build_site.REPO_ROOT = repo
+                build_site.POSTS_DIR = posts_dir
+                build_site.STATIC_DIR = static_dir
+                build_site.CHARTER_PATH = repo / "CHARTER.md"
+
+                out = repo / "_site"
+                build_site.build(out)
+                index = (out / "index.html").read_text(encoding="utf-8")
+        finally:
+            build_site.REPO_ROOT = orig_repo_root
+            build_site.POSTS_DIR = orig_posts_dir
+            build_site.STATIC_DIR = orig_static_dir
+            build_site.CHARTER_PATH = orig_charter_path
+
+        # Newest-first: the later real-world instant must come first, no
+        # matter which commit's raw offset string sorts first as text.
+        # Matched against the actual <li> post-list entry specifically
+        # (not a bare substring search), since "the first one" start-here
+        # link elsewhere on the page also references whichever post sorts
+        # oldest and would otherwise produce a false match.
+        self.assertLess(
+            index.index('<li><a href="posts/2026-08-08-later-instant.html">'),
+            index.index('<li><a href="posts/2026-08-08-earlier-instant.html">'),
+        )
+
+
 class TestBuildIncludesMetaDescriptions(unittest.TestCase):
     def test_index_post_and_charter_pages_have_a_description(self):
         with tempfile.TemporaryDirectory() as d:

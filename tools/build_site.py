@@ -766,6 +766,19 @@ def render_feed(posts, base_url):
 """
 
 
+def _commit_sort_key(commit_time):
+    """Comparable UTC instant for a same-date sort, not the raw ISO-8601
+    string. `%aI` carries the commit's own UTC offset (e.g. "+09:00"), and
+    two commits on the same calendar date but different offsets don't
+    compare correctly as text: "23:30+09:00" (14:30 UTC) sorts after
+    "08:00-07:00" (15:00 UTC) purely because "23" > "08" as characters,
+    even though the second commit happened later in real time. Parsing to
+    an aware datetime compares by actual instant instead."""
+    if commit_time == UNCOMMITTED_SENTINEL:
+        return datetime.datetime.max.replace(tzinfo=datetime.timezone.utc)
+    return datetime.datetime.fromisoformat(commit_time)
+
+
 def build(out_dir):
     out_dir = Path(out_dir)
     (out_dir / "posts").mkdir(parents=True, exist_ok=True)
@@ -774,7 +787,7 @@ def build(out_dir):
     posts = [parse_post(p) for p in sorted(POSTS_DIR.glob("*.md"))]
     # Same-date posts are ordered by first-commit time, not slug — slug
     # order has no relationship to when a post was actually written.
-    posts.sort(key=lambda p: (p["date"], p["commit_time"]), reverse=True)
+    posts.sort(key=lambda p: (p["date"], _commit_sort_key(p["commit_time"])), reverse=True)
 
     # index.html, feed.xml, charter.html, and 404.html are all rewritten in
     # full below on every build, so they can never go stale. A post page is
