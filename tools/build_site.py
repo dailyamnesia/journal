@@ -142,10 +142,10 @@ def _first_commit_time(path):
 
 
 def _is_blank(value):
-    """True if `value` has no visible content once ordinary whitespace *and*
+    """True if `value` has no visible content once ordinary whitespace,
     invisible Unicode formatting characters (category 'Cf' -- e.g. U+200B
     ZERO WIDTH SPACE, U+FEFF ZERO WIDTH NO-BREAK SPACE/BOM, U+200E/U+200F
-    the left/right-to-left marks) are set aside.
+    the left/right-to-left marks), and variation selectors are set aside.
 
     `str.strip()` -- used both for the plain pre-quote trim and the
     post-unquote trim that already closed the "title: \"   \"" and
@@ -161,8 +161,28 @@ def _is_blank(value):
     or accessible text at all -- the identical "blank-looking required
     value" failure the two prior fixes closed, just through a character
     class neither of them checked for.
+
+    A title made entirely of variation selectors (U+FE00-U+FE0F, e.g. the
+    emoji-presentation U+FE0F left behind if an edit deletes the base emoji
+    it modified; or U+E0100-U+E01EF, the ideographic variation selectors
+    used to pick a glyph variant for a CJK character) is just as invisible
+    as a Cf character -- a variation selector only ever modifies the
+    presentation of the character immediately before it and has no glyph of
+    its own -- but it isn't category 'Cf': the Unicode Character Database
+    files it under 'Mn' (nonspacing mark), the same general category as an
+    ordinary combining diacritic that *does* render visibly on its own.
+    Checking `unicodedata.category(ch) == "Cf"` alone therefore let a
+    variation-selector-only title sail through exactly like the zero-width-
+    space case once did, with no base character anywhere in the value for
+    the selectors to attach to.
     """
-    return all(ch.isspace() or unicodedata.category(ch) == "Cf" for ch in value)
+    def _invisible(ch):
+        if ch.isspace() or unicodedata.category(ch) == "Cf":
+            return True
+        code = ord(ch)
+        return 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF
+
+    return all(_invisible(ch) for ch in value)
 
 
 def parse_post(path):

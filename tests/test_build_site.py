@@ -578,6 +578,38 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_variation_selector_only_title_names_the_file(self):
+        # A title made entirely of variation selectors (e.g. U+FE0F, the
+        # "render the preceding character as an emoji" selector -- plausible
+        # if an emoji got deleted out of a title during editing but the
+        # trailing selector it modified was left behind) is just as
+        # blank-looking as the whitespace-only, zero-width-only, and
+        # control-character-only cases already caught above, but slips past
+        # _is_blank() through a gap none of those fixes closed: a variation
+        # selector has no glyph of its own and only ever modifies the
+        # character immediately before it, so standing alone it renders as
+        # nothing at all -- exactly as invisible as a Cf character -- but
+        # the Unicode Character Database files it under general category
+        # 'Mn' (nonspacing mark), not 'Cf'. _is_blank() only ever treated a
+        # character as blank via `str.isspace()` or category 'Cf', so it saw
+        # three "real" (non-blank) characters here and the required-key
+        # check passed. The post then built successfully with a
+        # `<title>`/`<h1>` and an index link that are all present in the
+        # markup but carry no visible or accessible text at all -- the same
+        # failure mode as the three prior fixes, just via a fourth character
+        # class none of them checked for.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "️️️"\ndate: 2026-01-01\n---\n'
+                'Body with a variation-selector-only title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight
