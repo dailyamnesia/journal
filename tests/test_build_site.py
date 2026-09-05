@@ -610,6 +610,39 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_hangul_filler_only_title_names_the_file(self):
+        # A title made entirely of Hangul filler characters (U+3164 HANGUL
+        # FILLER here -- the same "invisible name" trick used on some chat
+        # platforms) is just as blank-looking as the whitespace-only,
+        # zero-width-only, control-character-only, and variation-selector-
+        # only cases already caught above, but slips past _is_blank()
+        # through a gap none of those fixes closed: U+3164 (and its
+        # siblings U+115F, U+1160, U+FFA0) exist purely as placeholder jamo
+        # slots for composing a Hangul syllable block and render with no
+        # glyph of their own -- exactly as invisible as a Cf character or a
+        # variation selector -- but the Unicode Character Database files
+        # them under general category 'Lo' (letter, other), the same
+        # category as an ordinary visible letter. _is_blank() only ever
+        # treated a character as blank via `str.isspace()`, category 'Cf',
+        # or the variation-selector ranges, so it saw three "real"
+        # (non-blank) characters here and the required-key check passed.
+        # The post then built successfully with a `<title>`/`<h1>` and an
+        # index link that are all present in the markup but carry no
+        # visible or accessible text at all -- the same failure mode as the
+        # four prior fixes, just via a fifth character class none of them
+        # checked for.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "ㅤㅤㅤ"\ndate: 2026-01-01\n---\n'
+                'Body with a Hangul-filler-only title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight

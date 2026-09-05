@@ -180,7 +180,27 @@ def _is_blank(value):
         if ch.isspace() or unicodedata.category(ch) == "Cf":
             return True
         code = ord(ch)
-        return 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF
+        if 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF:
+            return True
+        # Hangul filler characters -- U+115F HANGUL CHOSEONG FILLER, U+1160
+        # HANGUL JUNGSEONG FILLER, U+3164 HANGUL FILLER, and U+FFA0
+        # HALFWIDTH HANGUL FILLER -- are placeholder code points that exist
+        # so an incomplete Hangul jamo sequence still has a slot to combine
+        # into a syllable block; none of the four carry a glyph of their
+        # own, the same "renders as nothing" trait as a Cf character or a
+        # variation selector (and the same trick some chat platforms'
+        # "blank name" workarounds actually use). But the Unicode Character
+        # Database files all four under general category 'Lo' (letter,
+        # other), not 'Cf' or 'Mn': for the purposes of Hangul composition
+        # they behave as ordinary letters, so neither check above catches
+        # them. A title made entirely of these (e.g. `title: "ㅤㅤㅤ"`,
+        # three U+3164 characters) is exactly as blank-looking as the
+        # zero-width-space and variation-selector cases already caught
+        # above, but used to sail past _is_blank() -- and therefore the
+        # `not meta.get(required)` check in parse_post() -- as three "real"
+        # characters, reaching <title>/<h1>/the index link as markup that's
+        # present but carries no visible or accessible text at all.
+        return code in (0x115F, 0x1160, 0x3164, 0xFFA0)
 
     return all(_invisible(ch) for ch in value)
 
