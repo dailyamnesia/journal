@@ -106,7 +106,33 @@ LIVE_PUBLIC="$LIVE_ROOT/public"
 LIVE_SERVER="$LIVE_ROOT/server.js"
 
 echo "== checking git state =="
-if [ -n "$(git status --porcelain)" ]; then
+# `git status --porcelain`'s own exit status was discarded here: embedded
+# directly inside `$( ... )` as an argument to `[ -n ... ]`, its failure
+# can't reach `set -e` at all, the same masking already fixed elsewhere in
+# this script (NEW_POST_COUNT/OLD_POST_COUNT/the process-owner lookup) for
+# a pipeline under `pipefail` -- this is the same failure shape one layer
+# simpler, no pipe needed, just a command substitution used as an argument.
+# `git status` can fail outright with nothing on stdout (a corrupted
+# `.git/index` -- disk-full mid-write, an interrupted `git add`, plain bit
+# rot -- makes it exit 128 with "fatal: .git/index: index file smaller
+# than expected" and zero stdout), and neither `git rev-parse HEAD` nor
+# `git fetch` need the index at all, so both keep succeeding right after
+# it. `[ -n "" ]` is false, so this guard -- meant to hard-stop the deploy
+# on uncommitted work -- silently reports the tree "clean" and the script
+# sails on to build and ship $LOCAL_REV with no FAILED message and no
+# indication the check never actually ran, hiding both a real
+# uncommitted change and a corrupted index that deserves its own
+# attention. Reproduced directly: a scratch repo with an uncommitted edit
+# and a truncated `.git/index` had this exact line pass straight through
+# while `git status --porcelain` itself exited 128 with empty stdout.
+# Capturing the command's own exit status first, the same guarded-
+# assignment shape already used for the post-count and owner checks below,
+# closes it.
+if ! GIT_STATUS_OUTPUT="$(git status --porcelain)"; then
+  echo "FAILED: could not determine git working tree status (git status --porcelain failed) -- refusing to guess whether the tree is clean." >&2
+  exit 1
+fi
+if [ -n "$GIT_STATUS_OUTPUT" ]; then
   echo "FAILED: working tree has uncommitted changes; commit before deploying." >&2
   git status --short >&2
   exit 1
