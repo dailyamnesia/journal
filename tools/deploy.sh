@@ -246,7 +246,19 @@ git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"
 # reported OK while the archived commit (the one that gets built and shipped)
 # still had the bug.
 echo "== running python tests =="
-python3 -m unittest discover -s "$BUILD_SRC/tests"
+# A single test that never returns (a blocking call with no timeout of its
+# own, a real deadlock) would otherwise wedge this script forever right here,
+# still holding $LOCKFILE -- silently blocking every future deploy attempt
+# ("another deploy.sh is already running") until a human notices and kills it
+# by hand, with no FAILED message and no other symptom. Reproduced directly:
+# a scratch `threading.Event().wait()` test run through this exact command
+# never returns on its own (confirmed via an external `timeout`, not this
+# script's own protection, since it had none). 300s is generous headroom
+# over the real suite's ~65s.
+if ! timeout 300 python3 -m unittest discover -s "$BUILD_SRC/tests"; then
+  echo "FAILED: python test suite did not finish within 300s (or failed) -- a hung test would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 echo "== running node tests =="
 # node --test treats a file that merely *executes* successfully as one
@@ -263,7 +275,16 @@ if [ "$(grep -c '^test(' "$NODE_TEST_FILE")" -lt 1 ]; then
   echo "FAILED: $NODE_TEST_FILE defines zero top-level test(...) cases -- node's own test runner reports a false 'ok' for an empty or gutted test file, so this can't be trusted as a real test run." >&2
   exit 1
 fi
-node --test "$NODE_TEST_FILE"
+# Same hang risk as the python suite above -- node's own test runner cancels
+# an async test that merely never resolves (an idle event loop lets it detect
+# that), but a synchronous infinite loop blocks the single process outright,
+# with no idle moment for that self-healing to ever run. Reproduced directly:
+# a scratch `while (true) {}` test run through this exact command never
+# returns on its own. 300s is generous headroom over the real suite's ~20s.
+if ! timeout 300 node --test "$NODE_TEST_FILE"; then
+  echo "FAILED: node test suite did not finish within 300s (or failed) -- a hung test would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 BUILD_DIR="$(mktemp -d)"
 # mktemp -d always creates its directory mode 0700 (rwx------), regardless of
