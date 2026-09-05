@@ -920,6 +920,89 @@ test('server: a FIFO at 404.html does not stall unrelated requests via the not-f
   }
 });
 
+test('server: fs.open failing with EMFILE returns 503 for a real file, not a false 404', async (t) => {
+  // Regression test: every fs.realpath/fs.open failure on the *requested*
+  // file's path -- ENOENT, ENOTDIR, ELOOP, EACCES, all of it -- used to
+  // funnel into the same serveNotFound() call, on the reasoning that any
+  // failure to reach the file means "this path doesn't have anything
+  // servable at it." EMFILE ("too many open files" -- this process's own
+  // file descriptor table is full) and ENFILE (the whole system's is) break
+  // that reasoning: they mean the OS couldn't even attempt the lookup, and
+  // say nothing at all about whether the path exists. A file sitting right
+  // there on disk gets exactly the same EMFILE as one that was never
+  // there -- so under enough concurrent load to hit the process's fd
+  // ulimit (no attacker or bug required, just an ordinary traffic burst, or
+  // enough slow clients pinned in mid-transfer at once), real pages started
+  // coming back as 404, indistinguishable from the content actually having
+  // been removed.
+  //
+  // Reproduced against a real, separate OS process with its own file
+  // descriptor ulimit deliberately lowered (not a mock or stub), firing
+  // enough concurrent requests at a real, present /index.html to exhaust
+  // it. Pre-fix, a real fraction of those requests came back 404. Post-fix,
+  // none of the requests that got a response at all come back 404 --
+  // exhaustion now surfaces as 503, and requests that can't even get a
+  // socket accepted fail at the connection level, which is a separate,
+  // already-understood degradation under extreme fd pressure, not a false
+  // "not found."
+  const dir = makePublicDir(t);
+  const { spawn } = require('node:child_process');
+  const serverPath = path.join(__dirname, '..', 'tools', 'server.js');
+  const childScript = `
+    const http = require('http');
+    const { createRequestHandler } = require(${JSON.stringify(serverPath)});
+    const server = http.createServer(createRequestHandler(${JSON.stringify(dir)})).listen(0, '127.0.0.1', () => {
+      console.log('PORT ' + server.address().port);
+    });
+  `;
+  // ulimit lowered inside a bash subshell, not this test process itself --
+  // only the server child needs a tight fd budget; the test process making
+  // the requests needs its own fds untouched.
+  const child = spawn('bash', ['-c', 'ulimit -n 60 && exec "$0" -e "$1"', process.execPath, childScript]);
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+
+  const port = await new Promise((resolve, reject) => {
+    let buf = '';
+    child.stdout.on('data', (c) => {
+      buf += c;
+      const m = buf.match(/PORT (\d+)/);
+      if (m) resolve(Number(m[1]));
+    });
+    child.on('exit', (code) => reject(new Error(`child exited early with code ${code}, stderr: ${stderr}`)));
+  });
+
+  const N = 150;
+  const statuses = await Promise.all(Array.from({ length: N }, () => new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /index.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    let data = '';
+    sock.on('data', (d) => { data += d.toString('latin1'); });
+    sock.on('error', () => resolve(null));
+    sock.on('close', () => {
+      const m = data.match(/^HTTP\/1\.1 (\d+)/);
+      resolve(m ? Number(m[1]) : null);
+    });
+  })));
+
+  const completed = statuses.filter((s) => s !== null);
+  assert.ok(
+    completed.length > 0,
+    'expected at least some of the concurrent requests to complete with an HTTP response'
+  );
+  assert.ok(
+    completed.some((s) => s === 503),
+    `expected at least one 503 once the process's fd table was exhausted, got statuses: ${JSON.stringify(completed)}`
+  );
+  assert.ok(
+    !completed.includes(404),
+    `a real, present file must never come back as 404 just because the process ran out of file descriptors, got statuses: ${JSON.stringify(completed)}`
+  );
+});
+
 // installGracefulShutdown has to be exercised in a real, separate OS
 // process: it installs a handler for a real OS signal on `process`, which
 // can't be verified by sending a signal to this test's own process without

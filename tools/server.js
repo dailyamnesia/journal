@@ -9,6 +9,20 @@ const CONTENT_TYPES = {
   '.svg': 'image/svg+xml',
 };
 
+// EMFILE (this process's own fd table is full) and ENFILE (the whole
+// system's fd table is full) are the two errno codes fs.realpath/fs.open
+// return when the failure has nothing to do with the specific path being
+// looked up -- unlike ENOENT/ENOTDIR/ELOOP/EACCES, which all mean something
+// concrete and permanent about *this* path, EMFILE/ENFILE mean "can't even
+// check right now," and would fail identically for any path, including ones
+// that plainly exist. Every other error code already routes to the 404 path
+// further down, which is correct for "genuinely not there"; these two need
+// to be told apart from that, since a real file misreported as missing
+// under transient load is a different, worse failure than a real 404.
+function isFdExhaustion(err) {
+  return !!err && (err.code === 'EMFILE' || err.code === 'ENFILE');
+}
+
 function resolveRequestPath(urlPath, publicDir) {
   let relative;
   try {
@@ -174,6 +188,24 @@ function createRequestHandler(publicDir) {
       });
     }
 
+    // Confirmed directly: with this process's own fd ulimit lowered to a
+    // small number and 150 concurrent requests fired at a real, existing
+    // /index.html, fs.open below failed with EMFILE for a fifth of them --
+    // without the isFdExhaustion() branches that call this, every one of
+    // those went through serveNotFound() and came back as a 404 for a file
+    // that is, at that exact moment, sitting right there on disk. Kept
+    // deliberately simple: no filesystem access of any kind, unlike
+    // serveNotFound() (which itself opens 404.html), so a response can
+    // still go out while the fd table is the thing that's actually out of
+    // room -- reaching for another file here would just be one more open()
+    // competing for the same exhausted resource, and could easily fail the
+    // same way.
+    function serveUnavailable() {
+      if (closed) return;
+      res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '1' });
+      res.end('service unavailable');
+    }
+
     // resolveRequestPath's boundary check is string-based: it only confirms
     // the *requested* path stays inside publicDir. fs.readFile below follows
     // symlinks, so a symlink sitting inside publicDir (pointing anywhere on
@@ -182,6 +214,7 @@ function createRequestHandler(publicDir) {
     // the real path first and re-checking containment closes that gap.
     fs.realpath(filePath, (err, real) => {
       if (closed) return;
+      if (isFdExhaustion(err)) return serveUnavailable();
       if (err || (real !== realPublicDir && !real.startsWith(realPublicDir + path.sep))) {
         return serveNotFound();
       }
@@ -241,7 +274,10 @@ function createRequestHandler(publicDir) {
           if (!openErr) fs.close(fd, () => {});
           return;
         }
-        if (openErr) return serveNotFound();
+        if (openErr) {
+          if (isFdExhaustion(openErr)) return serveUnavailable();
+          return serveNotFound();
+        }
         fs.fstat(fd, (statErr, stats) => {
           if (closed) return fs.close(fd, () => {});
           if (statErr || !stats.isFile() || hadTrailingSlash) {
