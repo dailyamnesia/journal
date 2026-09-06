@@ -353,8 +353,24 @@ def parse_charter(path=CHARTER_PATH):
         raise ValueError(f"{path}: expected a leading '# Title' line")
     # Same rule as parse_post() above: sanitize once at the source rather
     # than leave every HTML call site to apply it individually.
+    title = _strip_invalid_xml_chars(title_line[2:].strip())
+    # parse_post() rejects a blank-or-blank-looking title (plain empty,
+    # whitespace-only, or made entirely of invisible Unicode formatting
+    # characters/variation selectors/Hangul fillers -- see _is_blank())
+    # before it can reach a post's own <title>/<h1>/index link with no
+    # visible or accessible text at all. charter.html is built from this
+    # same title through the same page() call and carries the identical
+    # "every page has a real title" invariant, but this function never
+    # ran the equivalent check: a `# ` line with nothing (or nothing
+    # visible) after it -- e.g. CHARTER.md accidentally saved with a bare
+    # "# " leading line, or one edited down to just a trailing zero-width
+    # space -- passed the `startswith("# ")` check above just fine and
+    # shipped a blank <title></title> and <h1></h1> on the one page that
+    # exists specifically to state this project's ground rules.
+    if _is_blank(title):
+        raise ValueError(f"{path}: '# Title' line has no visible title text")
     return (
-        _strip_invalid_xml_chars(title_line[2:].strip()),
+        title,
         _strip_invalid_xml_chars(body.strip("\n")),
     )
 

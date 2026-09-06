@@ -973,6 +973,40 @@ class TestParseCharter(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_site.parse_charter(path)
 
+    def test_blank_title_line_raises(self):
+        # A "# " line with nothing after it passes the `startswith("# ")`
+        # check just fine -- the same gap parse_post() closed for a post's
+        # own blank title, with `not meta.get(required)` originally missing
+        # it entirely. parse_charter() never got the equivalent check at
+        # all: title_line[2:].strip() silently produced an empty string,
+        # which then reached page()'s <title>/<h1> as charter.html's own
+        # completely blank, invisible-to-a-reader title -- the identical
+        # "every page carries this tag" failure already fixed three times
+        # over for parse_post()'s title, just never applied to this
+        # sibling function that builds the exact same kind of page.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_text("# \n\nRule one.\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_charter(path)
+            self.assertIn(str(path), str(ctx.exception))
+
+    def test_zero_width_only_title_line_raises(self):
+        # Same gap as test_blank_title_line_raises, through the Unicode
+        # angle parse_post()'s own title check already guards against
+        # (three zero-width spaces are non-whitespace, non-empty
+        # characters that still render as nothing -- see _is_blank()).
+        # parse_charter() ran no equivalent check at all, so this title
+        # sailed straight through to a charter.html with a <title>/<h1>
+        # that are present in the markup but carry no visible or
+        # accessible text.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_text("# \u200b\u200b\u200b\n\nRule one.\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_charter(path)
+            self.assertIn(str(path), str(ctx.exception))
+
     def test_non_utf8_file_names_the_file(self):
         # Same gap as parse_post()'s own non-UTF-8 handling: a raw
         # UnicodeDecodeError never names the file it choked on.
