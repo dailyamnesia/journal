@@ -554,9 +554,63 @@ fi
 # exactly this. Re-running the identical reproduction with this check in
 # place correctly refused the second invocation instead of letting it
 # proceed.
+#
+# This scans /proc/$PPID/fd, not /proc/$SUPERVISOR_PPID/fd, in its first
+# version -- but $PPID is exactly the value the SUPERVISOR_PPID comment two
+# checks up above already explains can't be trusted: it's bash's own cached
+# copy of this process's parent PID, fixed at shell startup, and it keeps
+# reporting the supervisor's original PID number even after that process has
+# died and this script has been reparented (confirmed directly: a child bash
+# whose real parent was killed still reports the dead parent's PID in $PPID,
+# while `ps -o ppid= -p $$` correctly reports the live value, "1", right
+# after). If the supervisor dies in the narrow window between the
+# SUPERVISOR_PPID check above and this one -- the same "supervisor died
+# independently of this deploy" threat model that check itself exists for,
+# just a few lines later -- /proc/$PPID no longer exists at all once that
+# PID has been fully reaped. Bash's glob doesn't treat that as an error: with
+# no matches, "/proc/$PPID/fd/"* expands to its own literal, unexpanded
+# pattern string, the loop body still runs once against that nonexistent
+# path, `readlink` on it fails silently (caught by `2>/dev/null || true`),
+# and the function falls straight through to `return 1` -- "not replaced" --
+# indistinguishable from having genuinely checked every fd and found no
+# match. That's the exact "couldn't determine, so silently read as false"
+# masking shape this file has already closed for `parent_is_flock`, the
+# reparented-supervisor check, `git status --porcelain`, both post-count
+# guards, and the `ps -o user=` ownership lookup -- just never closed here,
+# for this specific check, guarding the one genuinely irreversible step.
+# Reproduced directly: a scratch harness matching this exact self-reexec
+# flock shape, with its supervisor killed right between the two checks,
+# printed "reported NOT replaced" from this original form even though the
+# supervisor was confirmed gone and /proc/<its pid>/fd could no longer be
+# inspected at all -- a silent pass immediately ahead of the sync, with no
+# indication the check never actually ran.
+#
+# Fixed two ways: reading $SUPERVISOR_PPID (looked up fresh, immediately
+# above) instead of the stale $PPID closes the staleness gap itself: as long
+# as the supervisor was still alive at that check, /proc/$SUPERVISOR_PPID/fd
+# reflects the same still-alive process here, one statement later, sharing
+# the same razor-thin, unavoidable TOCTOU window every other check in this
+# script already accepts between adjacent statements. Explicitly checking
+# whether the glob actually matched anything (rather than trusting a loop
+# that can silently run zero times) closes the rest: if the supervisor's fd
+# directory can't be found or enumerated for any reason -- including that
+# same narrow race, if it's ever actually hit -- this now fails loudly with
+# its own message instead of reporting a false "not replaced". Re-running
+# the identical kill-the-supervisor-mid-check repro with this version
+# printed the new FAILED message and exited nonzero instead of silently
+# passing; re-running it against a genuinely untouched lock file and a
+# genuinely deleted-and-recreated one (supervisor alive throughout, both
+# built from the real `flock --close` shape) still correctly reported "not
+# replaced" and "replaced" respectively, so the fix doesn't change either
+# legitimate outcome, only the previously-silent failure-to-check case.
 lock_file_was_replaced() {
   local target fd
-  for fd in "/proc/$PPID/fd/"*; do
+  local fds=("/proc/$SUPERVISOR_PPID/fd/"*)
+  if [ ! -e "${fds[0]}" ]; then
+    echo "FAILED: could not inspect this deploy's lock-holding supervisor (pid $SUPERVISOR_PPID)'s open file descriptors via /proc -- refusing to guess whether $LOCKFILE was deleted and replaced while this deploy was running." >&2
+    exit 1
+  fi
+  for fd in "${fds[@]}"; do
     target="$(readlink "$fd" 2>/dev/null || true)"
     if [ "$target" = "$LOCKFILE (deleted)" ]; then
       return 0
