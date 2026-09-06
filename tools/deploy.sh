@@ -762,7 +762,29 @@ done
 # from "the deploy happened and is live; only this last sanity check
 # failed" without having to guess from prose alone.
 POST_VERIFY_SANITY_FAILED=2
-pid="$(systemctl show -p MainPID --value dailyamnesia-web.service)"
+# Guarded the same way the post-count checks and the `ps -o user=` lookup
+# just below are: this is a plain (non-`local`) top-level assignment, so a
+# failing `systemctl show` *does* still trip `set -e` on its own -- but with
+# none of this section's own "FAILED: deploy succeeded and is verified
+# live" messaging and the wrong exit code (whatever `systemctl` itself
+# returned, not $POST_VERIFY_SANITY_FAILED), making it indistinguishable
+# from every other, nothing-shipped "FAILED" exit earlier in this script --
+# exactly the confusion this whole post-verify section exists to prevent.
+# `systemctl show` on a merely-unknown unit still exits 0 with an empty/"0"
+# MainPID (caught by the check right below), so a non-zero exit here means
+# something more fundamental broke (e.g. a lost or timed-out connection to
+# the systemd/dbus manager) -- transient, but no less real than the
+# already-guarded `ps -o user=` lookup a few lines down for the same
+# "deploy already succeeded, one last sanity check couldn't run" case.
+# Reproduced directly: a scratch stand-in `systemctl` that fails `show`
+# with a simulated "Failed to connect to bus" error, run through this exact
+# unguarded assignment, killed the script via bare `set -e` -- exit 1, only
+# systemctl's own raw stderr, no "FAILED:" message and no
+# $POST_VERIFY_SANITY_FAILED. Guarding it the same way closed it.
+if ! pid="$(systemctl show -p MainPID --value dailyamnesia-web.service)"; then
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not query dailyamnesia-web.service's MainPID via systemctl afterward, so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
+  exit "$POST_VERIFY_SANITY_FAILED"
+fi
 if [ -z "$pid" ] || [ "$pid" = "0" ]; then
   echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine dailyamnesia-web.service's running PID afterward, so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
   exit "$POST_VERIFY_SANITY_FAILED"
