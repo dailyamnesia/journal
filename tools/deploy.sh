@@ -61,8 +61,39 @@ LOCKFILE=/tmp/dailyamnesia-deploy.lock
 # a cached value) closes it: re-running the identical pre-exported-var
 # reproduction with this check in place made both invocations fall through
 # to the real `flock` line, and the second was correctly rejected.
+# `ps`'s own exit status is captured explicitly, the same guarded-assignment
+# shape used for git status/NEW_POST_COUNT/OLD_POST_COUNT/systemctl show/the
+# process-owner lookup elsewhere in this script: embedding the substitution
+# directly as an argument to `[ ... = ... ]` (`[ "$(ps ...)" = "flock" ]`, the
+# original shape here) lets a `ps` failure -- a transient fork() failure
+# under process-table/pid-limit pressure, a /proc hiccup, anything that
+# makes `ps` itself exit non-zero rather than just report an unexpected
+# comm -- masquerade as an ordinary "parent is not flock" result, since `[ =
+# ]`'s own exit status (not the substitution's) is all `set -e` ever sees.
+# That's the exact bug already found and fixed for `git status --porcelain`
+# above, recurring here unfixed. Reproduced directly: a scratch copy of this
+# exact gate, with a `ps` on `PATH` that fails only for the literal
+# "-o comm=" invocation shape this function uses (every other `ps` call
+# -- the reparented-supervisor check, pkill's own lookups -- left hitting
+# the real binary), made a run that is genuinely and correctly the
+# `flock`-supervised, locked child mistake itself for an unlocked/spoofed
+# invocation: it fell through to the top-level `if`, tried to
+# `flock -n` the very lockfile its own real supervisor was already holding,
+# collided instantly, and exited "FAILED: another deploy.sh is already
+# running" -- aborting a perfectly legitimate, non-concurrent deploy over
+# nothing more than a flaky `ps` call, with a misleading message that
+# points at a conflicting deploy that was never running. Capturing `ps`'s
+# own exit status and failing loud and distinctly on it, instead of letting
+# a failure silently read as "false", closes it: re-running the identical
+# repro with this fix in place correctly reported the real cause (`ps`
+# itself failed) instead of the misleading "already running" message.
 parent_is_flock() {
-  [ "$(ps -o comm= -p "$PPID" 2>/dev/null)" = "flock" ]
+  local comm
+  if ! comm="$(ps -o comm= -p "$PPID" 2>/dev/null)"; then
+    echo "FAILED: could not determine this process's own parent command via ps -- refusing to guess whether the DAILYAMNESIA_DEPLOY_LOCKED sentinel is trustworthy (this would otherwise silently read as 'parent is not flock' and could either run unlocked or falsely reject a legitimate deploy as 'another deploy.sh is already running')." >&2
+    exit 1
+  fi
+  [ "$comm" = "flock" ]
 }
 # $LOCKFILE lives in /tmp: world-writable (the sticky bit only stops other
 # users from deleting or renaming an entry that's already there, not from
@@ -467,7 +498,29 @@ fi
 # simulated sync step run to completion, unsupervised, every time; this
 # check, added right before the one genuinely irreversible step, catches it
 # and aborts instead.
-if [ "$(ps -o ppid= -p $$ | tr -d ' ')" = "1" ]; then
+# Same masking shape as `git status --porcelain` above (and as
+# `parent_is_flock` above it, before its own fix): embedding the `ps`
+# substitution directly as an argument to `[ ... = "1" ]` -- the original
+# shape here -- means only `[ = ]`'s own exit status can ever reach `set -e`
+# or `pipefail`, never `ps`'s (or `tr`'s). A transient `ps` failure right
+# here reads as an empty string, which compares false against "1" the exact
+# same way "genuinely not reparented" does -- silently passing this check
+# even though it was never actually able to determine whether the
+# lock-holding supervisor is still alive, right before the one genuinely
+# irreversible step this check exists to protect. Reproduced directly: a
+# scratch copy of this exact line, with a `ps` on `PATH` that fails only for
+# the literal "-o ppid=" shape used here, printed "check passed: proceeding
+# as if supervisor is healthy" and exited 0 -- the failure was completely
+# invisible, whether or not the supervisor was actually reparented.
+# Capturing `ps`'s own exit status first, the same guarded-assignment shape
+# already used elsewhere in this script, closes it: re-running the
+# identical repro with this fix in place reported the real cause instead of
+# silently passing.
+if ! SUPERVISOR_PPID="$(ps -o ppid= -p $$ | tr -d ' ')"; then
+  echo "FAILED: could not determine this deploy's own parent process id via ps -- refusing to guess whether the lock-holding supervisor is still alive rather than risk syncing unprotected." >&2
+  exit 1
+fi
+if [ "$SUPERVISOR_PPID" = "1" ]; then
   echo "FAILED: this deploy's lock-holding process is gone (reparented to init) — a concurrent deploy may already be running; refusing to sync." >&2
   exit 1
 fi
