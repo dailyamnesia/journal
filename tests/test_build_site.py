@@ -177,6 +177,36 @@ class TestRenderInline(unittest.TestCase):
                 stack.pop()
         self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
 
+    def test_unpaired_asterisk_does_not_pair_across_an_unrelated_bold_delimiter(self):
+        # A lone, unpaired "*" from a literal multiplication (e.g. "x*y",
+        # with no space around the asterisk so it can't match
+        # test_standalone_multiplication_asterisks_are_not_treated_as_emphasis'
+        # space-flanked case) has no partner of its own anywhere in the
+        # string. But _ITALIC_RE's old pattern -- r"\*([^*\s](?:[^*]*[^*\s])?)\*"
+        # -- placed no restriction on what character sits on the *other*
+        # side of either delimiter: its `[^*]*` middle was free to run
+        # straight past a space and swallow one half of a later, unrelated
+        # "**" run (e.g. the "**" in "a**b", itself not a valid bold
+        # delimiter pair on its own -- there's no closing "**" for it), and
+        # treat the near asterisk of that pair as this italic's closing
+        # delimiter instead. render_inline("x*y a**b") used to render
+        # "x<em>y a</em>*b" -- eating the literal "*" out of "x*y",
+        # wrapping unrelated text spanning two words in <em>, and leaving a
+        # stray "*" dangling in front of "b" -- instead of leaving both
+        # literal fragments untouched. Requiring each italic delimiter to
+        # be an isolated single "*" (not preceded or followed by another
+        # "*", via (?<!\*) / (?!\*) on both ends) closes the gap: a "*"
+        # that is one half of a "**" run can no longer serve as either an
+        # opening or closing italic delimiter at all.
+        self.assertEqual(build_site.render_inline("x*y a**b"), "x*y a**b")
+        self.assertEqual(build_site.render_inline("2*a b**c"), "2*a b**c")
+        # A genuine, well-formed *italic* elsewhere in the same paragraph
+        # must still work once the unrelated "**" run is out of the way.
+        self.assertEqual(
+            build_site.render_inline("x*y a**b *world*"),
+            "x*y a**b <em>world</em>",
+        )
+
 
 class TestPage(unittest.TestCase):
     def test_no_description_by_default(self):
@@ -369,6 +399,36 @@ class TestSummary(unittest.TestCase):
         self.assertEqual(
             build_site._summary(body2), "Delimit a literal backtick like `code` in prose."
         )
+
+    def test_bold_containing_nested_italic_does_not_leak_asterisks_to_an_unrelated_stray_one(self):
+        # render_inline()'s _bold_replace() resolves a bold match's own
+        # nested *italic* run (e.g. the "*b*" in "**a *b* c**") to plain
+        # text right when the match is found, scoped to that match, before
+        # splicing the result back into the string -- so by the time its
+        # separate, whole-string _ITALIC_RE.sub() pass runs afterward, none
+        # of those inner asterisks are still there for it to find. _summary()
+        # re-parses the same raw markdown for the same result but used to
+        # strip bold via a plain `_BOLD_RE.sub(r"\1", text)` backreference
+        # instead -- splicing the captured group straight back in with its
+        # nested italic's asterisks still literally present. Its own later,
+        # whole-string _ITALIC_RE.sub() pass then saw those survived
+        # asterisks as ordinary text, free to pair one of them with an
+        # unrelated, unpaired "*" sitting *outside* the original bold span
+        # -- e.g. a literal, space-free multiplication like "2*a" earlier in
+        # the same paragraph -- instead of leaving both alone.
+        # _summary("2*a a**b x*y ` `x*y` a**b") used to return
+        # "2a ab xy  x*y` ab" (the literal "2*a" corrupted into "2a", and a
+        # stray "*" left in "x*y`") -- diverging from what render_inline()
+        # (and therefore the actual rendered post) shows for the identical
+        # raw text. Resolving a bold match's own nested italic the same way
+        # render_inline() does, via _bold_strip_replace(), keeps the two in
+        # sync.
+        body = "2*a a**b x*y ` `x*y` a**b"
+        rendered_plain_text = re.sub(
+            r"<[^>]+>", "", build_site.render_inline(body)
+        )
+        self.assertEqual(build_site._summary(body), rendered_plain_text)
+        self.assertEqual(build_site._summary(body), "2*a ab xy  xy` ab")
 
     def test_truncates_long_paragraph_at_word_boundary(self):
         summary = build_site._summary("word " * 100)

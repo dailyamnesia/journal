@@ -480,9 +480,9 @@ def _stash_code_spans(text):
 # </strong> and closes after it). Requiring every inner "*" to be part
 # of its own matched pair closes that gap: the stray "*a*" no longer
 # matches as bold's middle at all, leaving well-formed output instead.
-_ITALIC_INNER = r"\*[^*\s](?:[^*]*[^*\s])?\*"
+_ITALIC_INNER = r"(?<!\*)\*(?!\*)[^*\s](?:[^*]*[^*\s])?(?<!\*)\*(?!\*)"
 _BOLD_RE = re.compile(r"\*\*([^*\s](?:(?:[^*]|" + _ITALIC_INNER + r")*[^*\s])?)\*\*")
-_ITALIC_RE = re.compile(r"\*([^*\s](?:[^*]*[^*\s])?)\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\s](?:[^*]*[^*\s])?)(?<!\*)\*(?!\*)")
 
 
 def _bold_replace(match):
@@ -508,6 +508,29 @@ def _bold_replace(match):
     # over.
     inner = _ITALIC_RE.sub(r"<em>\1</em>", match.group(1))
     return f"<strong>{inner}</strong>"
+
+
+def _bold_strip_replace(match):
+    # _summary()'s plain-text sibling of _bold_replace() above, for exactly
+    # the same reason: a bold match's captured group can contain a nested
+    # *italic* run (that's what lets "**bold *and italic* together**"
+    # match _BOLD_RE at all), and those inner "*" characters have to be
+    # resolved right here, scoped to this one match, before the substituted
+    # text is spliced back in -- not left as raw asterisks for the later,
+    # separate _ITALIC_RE.sub() pass in _summary() to find on its own. That
+    # pass runs over the *entire* string with no notion of where this
+    # match's boundaries were, so a raw "*" surviving inside it was free to
+    # pair with an unrelated "*" *outside* the original bold span instead --
+    # e.g. _summary("2*a a**b x*y ` `x*y` a**b") used to return
+    # "2a ab xy  x*y` ab" (the literal "2*a" corrupted into "2a", and a
+    # stray "*" left sitting in "x*y`") instead of matching what the actual
+    # rendered post shows, because `_BOLD_RE.sub(r"\1", text)` spliced the
+    # captured group straight back in via a plain backreference -- asterisks
+    # and all -- instead of resolving its own nested italic first the same
+    # way render_inline() does. Resolving it here, scoped to just this
+    # match's own captured text, keeps _summary() in sync with render_inline()
+    # on which "*" characters a bold span actually consumes.
+    return _ITALIC_RE.sub(r"\1", match.group(1))
 
 
 def render_inline(text):
@@ -674,7 +697,7 @@ def _summary(body):
     # "*" in "3 * 4 * 5") and corrupting code-span content (e.g. "`2*a`"
     # became "2a") rather than only removing real markdown delimiters.
     text, code_spans = _stash_code_spans(" ".join(paragraph))
-    text = _BOLD_RE.sub(r"\1", text)
+    text = _BOLD_RE.sub(_bold_strip_replace, text)
     text = _ITALIC_RE.sub(r"\1", text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", code)
