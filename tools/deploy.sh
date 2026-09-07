@@ -346,8 +346,47 @@ echo "== running node tests =="
 # having verified nothing. Guard by statically counting top-level test(
 # call sites in the exact pinned file about to run before trusting node's
 # own exit code.
+#
+# The count used to be read straight out of `$(grep -c ...)` embedded
+# directly as an argument to `[ ... -lt 1 ]` -- the same masking shape
+# already fixed elsewhere in this script (parent_is_flock, the
+# reparented-supervisor check, git status --porcelain, both post-count
+# guards, the ps -o user= ownership lookup): only `[ ]`'s own exit status
+# ever reaches `set -e`, never grep's. `grep -c` exits 1 (not 0) on a
+# genuine zero-match count, which is fine -- its stdout is still the
+# correct, trustworthy "0" -- but it also exits non-zero with *empty*
+# stdout on a real failure (the file unreadable: bad permissions on a
+# corrupted checkout, a transient I/O error on the worktree). In that
+# case `[ "" -lt 1 ]` doesn't evaluate false, it errors outright
+# ("integer expression expected"), and that error is itself what `if`
+# sees -- non-zero, so the FAILED branch above is skipped and the script
+# falls through as if the file had been confirmed to contain real tests,
+# straight into `node --test` next, with nothing to say the count was
+# never actually known. Reproduced directly: a scratch copy of this exact
+# line, pointed at a real file with its own real test(...) cases but made
+# unreadable (chmod 000), printed grep's "Permission denied" and bash's
+# "integer expression expected" to stderr and then "PASSED", exit 0 --
+# indistinguishable from a genuinely-verified file.
+#
+# Fixed by capturing grep's stdout unconditionally (the `|| true` absorbs
+# the expected-and-fine exit 1 for a real zero count, so `set -e` never
+# fires on that legitimate case) and then validating the captured text is
+# actually a non-negative integer before trusting it in the `-lt`
+# comparison -- a real failure leaves it empty, which fails that
+# validation and reports its own distinct FAILED message instead of
+# silently passing. Re-running the identical chmod-000 repro with this
+# fix in place now reports "could not count" and exits 1; re-running the
+# original two legitimate cases (real tests present; file present but
+# genuinely gutted to zero test(...) cases) still passes and still fails
+# with the original "zero top-level test(...) cases" message,
+# respectively -- unchanged.
 NODE_TEST_FILE="$BUILD_SRC/tests/server.test.js"
-if [ "$(grep -c '^test(' "$NODE_TEST_FILE")" -lt 1 ]; then
+NODE_TEST_COUNT="$(grep -c '^test(' "$NODE_TEST_FILE" || true)"
+if ! [[ "$NODE_TEST_COUNT" =~ ^[0-9]+$ ]]; then
+  echo "FAILED: could not count top-level test(...) cases in $NODE_TEST_FILE (grep failed, e.g. an unreadable file) -- refusing to guess whether it contains real tests rather than trust node's own exit code on an unverified file." >&2
+  exit 1
+fi
+if [ "$NODE_TEST_COUNT" -lt 1 ]; then
   echo "FAILED: $NODE_TEST_FILE defines zero top-level test(...) cases -- node's own test runner reports a false 'ok' for an empty or gutted test file, so this can't be trusted as a real test run." >&2
   exit 1
 fi
