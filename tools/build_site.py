@@ -976,6 +976,24 @@ def _resolve_output_dir(argv):
     whole site into a real `./--help/` directory rather than printing
     usage, exactly the kind of thing a stranger reading the module
     docstring's own "Usage:" line would naturally try first.
+
+    A blank argument (an empty string, or one made entirely of whitespace/
+    invisible Unicode formatting characters -- see `_is_blank()`) used to
+    slip past that same fix untouched: it doesn't start with "-", so it
+    fell straight through to `return arg`, and `Path("")` -- what an empty
+    string becomes the moment `build()` does `out_dir = Path(out_dir)` --
+    is `Path(".")`, the *current directory*, not "no directory." A caller
+    that builds the output-dir argument itself (e.g. `build_site.py
+    "$OUT_DIR"` with `$OUT_DIR` unset, or any other empty-string-producing
+    typo) silently built the entire site into whatever directory the
+    script happened to be run from instead -- for the common case of
+    running it from the repo root, that means index.html/charter.html/
+    feed.xml/404.html/favicon.svg written over the top level of the repo
+    and every post's rendered .html sitting right next to its .md source
+    inside posts/ itself. No error, no warning, exit code 0 -- the exact
+    same "silently accepted as a valid directory name instead of being
+    rejected" shape as the `--help` case above, just reached through an
+    empty argument instead of a `-`-prefixed one.
     """
     if len(argv) > 2:
         sys.stderr.write("usage: build_site.py [output_dir]\n")
@@ -989,6 +1007,12 @@ def _resolve_output_dir(argv):
             sys.stderr.write(
                 f"usage: build_site.py [output_dir]\n"
                 f"build_site.py: unrecognized argument: {arg}\n"
+            )
+            sys.exit(1)
+        if _is_blank(arg):
+            sys.stderr.write(
+                f"usage: build_site.py [output_dir]\n"
+                f"build_site.py: output_dir must not be blank, got {arg!r}\n"
             )
             sys.exit(1)
         return arg

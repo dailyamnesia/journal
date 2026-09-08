@@ -1658,6 +1658,32 @@ class TestResolveOutputDir(unittest.TestCase):
                 build_site._resolve_output_dir(["build_site.py", "a", "b"])
         self.assertNotEqual(cm.exception.code, 0)
 
+    def test_empty_string_argument_is_rejected_not_treated_as_current_dir(self):
+        # Pre-fix, an empty string doesn't start with "-", so it fell
+        # straight through to `return arg` -- and `Path("")` is `Path(".")`,
+        # the current directory, not "no directory." A caller that builds
+        # the output-dir argument itself (e.g. `build_site.py "$OUT_DIR"`
+        # with `$OUT_DIR` unset) silently built the whole site into
+        # whatever directory the script was run from -- for the common
+        # case of running it from the repo root, overwriting index.html/
+        # charter.html/feed.xml/404.html at the top level and dropping
+        # every post's rendered .html right next to its .md source inside
+        # posts/ itself, with no error and exit code 0.
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(stderr):
+                build_site._resolve_output_dir(["build_site.py", ""])
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("blank", stderr.getvalue())
+
+    def test_whitespace_only_argument_is_rejected(self):
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(stderr):
+                build_site._resolve_output_dir(["build_site.py", "   "])
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("blank", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
