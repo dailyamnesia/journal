@@ -441,6 +441,32 @@ chmod 755 "$BUILD_DIR"
 echo "== building site =="
 python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"
 
+# Same drift as the chmod above, one level down, on the one subdirectory the
+# fix above doesn't reach: build_site.py itself creates "$BUILD_DIR/posts"
+# (`(out_dir / "posts").mkdir(parents=True, exist_ok=True)`), a fresh
+# directory whose mode -- unlike $BUILD_DIR's own, which mktemp -d always
+# forces to 0700 regardless of umask -- is whatever this shell's umask leaves
+# after Python's default 0777 mkdir mode. Under this deploy's own ordinary
+# invocation environment that happens to land on 0755, which is why the fix
+# above, found and confirmed against that same environment, only ever needed
+# to correct $BUILD_DIR's own top-level mode. But nothing here pins the
+# umask, and the third and fourth rsync passes below both sync
+# "$BUILD_DIR/posts/" (trailing slash, so *its own* directory mode goes along
+# for the ride, exactly the mechanism the fix above already documents) onto
+# "$LIVE_PUBLIC/posts/" -- so a deploy actually run under a stricter umask
+# (a hardened shell profile, a systemd unit with UMask=, an operator's own
+# `umask 077` left set in the invoking session) silently drifts
+# $LIVE_PUBLIC/posts down to match, the identical "doesn't break the live
+# site, since server.js runs as its owner, but silently locks out anyone
+# else" failure the fix above already closed for $LIVE_PUBLIC itself, just
+# one directory level lower and still open. Confirmed directly: the exact
+# three posts-touching rsync passes below, run under `umask 077` against a
+# real build_site.py output and a fresh, correctly-755 $LIVE_PUBLIC/posts,
+# left it at 0700 afterward even with the $BUILD_DIR chmod above already in
+# place. chmod-ing $BUILD_DIR/posts here, right after build_site.py creates
+# it, closes the same gap the same way.
+chmod 755 "$BUILD_DIR/posts"
+
 # No post has ever been removed in this project's history, so a build with
 # fewer post pages than what's already live is a strong signal of a broken
 # build (e.g. posts/ glob resolving empty), not a deliberate deletion — and
