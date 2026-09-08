@@ -546,6 +546,24 @@ def render_inline(text):
     return text
 
 
+_FENCE_OPEN_RE = re.compile(r"^`{3,}")
+
+
+def _fence_marker(line):
+    """The backtick run that opens a fence, e.g. "```" or "````" -- only a
+    line consisting of exactly that many backticks (no more, no fewer)
+    closes it. A longer opener than 3 lets a post nest a literal shorter
+    fence inside one (the standard trick for showing fence syntax without
+    triggering it); render_markdown/_summary used to always close on the
+    first bare "```" regardless of the opener's own length, so a "````"
+    wrapper around content containing a real "```" line silently closed
+    early -- the exact silently-corrupting failure mode the unterminated-
+    fence ValueError below exists to prevent, just reachable through a
+    4-backtick opener instead of the already-guarded 3-backtick case."""
+    m = _FENCE_OPEN_RE.match(line)
+    return m.group() if m else None
+
+
 def render_markdown(body, source="post"):
     lines = body.split("\n")
     out = []
@@ -568,27 +586,32 @@ def render_markdown(body, source="post"):
         if line.startswith("```"):
             flush_paragraph()
             flush_quote()
+            marker = _fence_marker(line)
             i += 1
             code_lines = []
-            # Only an exact "```" line (no trailing info-string) closes the
-            # fence -- the opening line is matched permissively (startswith,
-            # so "```python"/"```bash" language tags work, as real posts in
-            # this repo use extensively), but a content line that happens to
-            # start with "```" too (e.g. a post demonstrating this renderer's
-            # own fence syntax, wrapping a sample "```python ... ```" block
-            # inside an outer fence) must not itself be mistaken for the
-            # close. It used to be: any line starting with "```" closed the
-            # fence, so render_markdown("```\n```python\nprint(1)\n```\n```")
-            # -- an outer fence containing a literal nested fenced example --
+            # Only an exact line of the same backtick count as the opener
+            # closes the fence -- the opening line is matched permissively
+            # (startswith, so "```python"/"```bash" language tags work, as
+            # real posts in this repo use extensively), but a content line
+            # that happens to start with backticks too (e.g. a post
+            # demonstrating this renderer's own fence syntax, wrapping a
+            # sample "```python ... ```" block inside an outer fence) must
+            # not itself be mistaken for the close. It used to be: any line
+            # starting with "```" closed the fence, so
+            # render_markdown("```\n```python\nprint(1)\n```\n```") -- an
+            # outer fence containing a literal nested fenced example --
             # closed on the inner "```python" line, leaving an empty code
             # block, dumping "print(1)" out as a bogus visible paragraph,
             # and opening a second, also-empty code block from the line
-            # that was meant to be the inner block's own close.
-            while i < len(lines) and lines[i].rstrip() != "```":
+            # that was meant to be the inner block's own close. Matching by
+            # marker length (not a hardcoded "```") closes the same gap for
+            # a 4-or-more-backtick opener wrapping literal ``` content --
+            # see _fence_marker()'s own docstring.
+            while i < len(lines) and lines[i].rstrip() != marker:
                 code_lines.append(lines[i])
                 i += 1
             if i >= len(lines):
-                raise ValueError(f"{source}: unterminated code fence (``` opened but never closed)")
+                raise ValueError(f"{source}: unterminated code fence ({marker} opened but never closed)")
             out.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
             i += 1
             continue
@@ -645,6 +668,7 @@ def _summary(body):
     paragraph = []
     quoting = False
     in_code = False
+    fence_marker = None
     for line in body.split("\n"):
         if not in_code and line.startswith("```"):
             # render_markdown() flushes the current paragraph/quote before a
@@ -654,15 +678,18 @@ def _summary(body):
             if paragraph:
                 break
             in_code = True
+            fence_marker = _fence_marker(line)
             continue
         if in_code:
             # Mirrors render_markdown()'s own close condition: only an exact
-            # "```" line ends the fence, not any line that merely starts
-            # with backticks (a nested fenced-code example inside an outer
-            # fence, e.g. "```python", must not prematurely end it -- see
-            # the matching comment in render_markdown() for the concrete
-            # repro).
-            if line.rstrip() == "```":
+            # line of the same backtick count as the opener ends the fence,
+            # not any line that merely starts with backticks (a nested
+            # fenced-code example inside an outer fence, e.g. "```python",
+            # must not prematurely end it), and not a shorter bare "```"
+            # inside a longer opener used to nest one -- see the matching
+            # comment and _fence_marker()'s own docstring in render_markdown()
+            # for the concrete repro.
+            if line.rstrip() == fence_marker:
                 in_code = False
             continue
         if line.strip() == "":

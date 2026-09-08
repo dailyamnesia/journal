@@ -313,6 +313,35 @@ class TestRenderMarkdown(unittest.TestCase):
             build_site.render_markdown(body, source="posts/example.md")
         self.assertIn("unterminated code fence", str(ctx.exception))
 
+    def test_longer_opening_fence_is_not_closed_by_a_shorter_bare_fence_inside_it(self):
+        # The standard way to show a literal ``` fence inside a fenced block
+        # is to wrap it in a longer one (here "````"). Before, the fence
+        # closer only ever matched a bare "```" regardless of how many
+        # backticks actually opened it, so a "````"-opened block closed on
+        # the first plain "```" line inside -- reopening the exact
+        # silently-corrupting failure mode
+        # test_fully_nested_fence_example_raises_instead_of_silently_corrupting
+        # guards against, just reachable through a longer opener instead of
+        # an equal-length one. This should raise the same loud
+        # unterminated-fence error, not silently split into stray code
+        # blocks and a leaked paragraph.
+        body = "````\nfoo\n```\nbar\n```\nclosed content\n```\n\nFinal paragraph."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("unterminated code fence", str(ctx.exception))
+
+    def test_longer_opening_fence_closes_only_on_a_matching_length_marker(self):
+        # The well-formed version of the above: a "````"-opened block
+        # closes only on a bare "````" line, so a literal "```" (and
+        # anything else short of a 4-backtick-only line) inside it stays
+        # part of the code block's content instead of ending it early.
+        body = "````\nfoo\n```\nbar\n```\nclosed content\n````\n\nFinal paragraph."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<pre><code>foo\n```\nbar\n```\nclosed content</code></pre>\n"
+            "<p>Final paragraph.</p>",
+        )
+
     def test_blockquote(self):
         self.assertEqual(
             build_site.render_markdown("> quoted line"),
@@ -371,6 +400,17 @@ class TestSummary(unittest.TestCase):
         # post's real first paragraph, instead of being skipped entirely as
         # a fence and falling through to the actual first paragraph after it.
         body = "```\n```python\nprint('hi')\n```\n\nActual first paragraph."
+        self.assertEqual(build_site._summary(body), "Actual first paragraph.")
+
+    def test_longer_opening_fence_is_not_closed_by_a_shorter_bare_fence_inside_it(self):
+        # Mirrors render_markdown()'s own fix: _summary() used to toggle out
+        # of "in code" mode on any bare "```" line regardless of how many
+        # backticks actually opened the fence, so a leading "````"-opened
+        # block containing a literal "```" line closed early right there,
+        # leaking the fence's own remaining content ("bar") into the
+        # summary instead of skipping the whole fence and reaching the
+        # real first paragraph after it.
+        body = "````\nfoo\n```\nbar\n```\nclosed content\n````\n\nActual first paragraph."
         self.assertEqual(build_site._summary(body), "Actual first paragraph.")
 
     def test_strips_backticks_and_asterisks(self):
