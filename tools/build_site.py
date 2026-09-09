@@ -200,7 +200,31 @@ def _is_blank(value):
         # `not meta.get(required)` check in parse_post() -- as three "real"
         # characters, reaching <title>/<h1>/the index link as markup that's
         # present but carries no visible or accessible text at all.
-        return code in (0x115F, 0x1160, 0x3164, 0xFFA0)
+        if code in (0x115F, 0x1160, 0x3164, 0xFFA0):
+            return True
+        # A sixth class, sharing the same root cause as the four checks
+        # above -- a code point with no glyph of its own, meant only to
+        # modify or separate the characters around it -- but filed under
+        # yet another general category that isn't whitespace, 'Cf', a
+        # variation selector, or a Hangul filler: U+034F COMBINING GRAPHEME
+        # JOINER (used to block otherwise-automatic combining/ligating
+        # behavior between two adjacent characters, invisible with nothing
+        # to join when it appears alone) and U+180B-U+180D/U+180F, the
+        # Mongolian free variation selectors one through four (siblings of
+        # the U+FE00-U+FE0F block already checked above, just a separate
+        # Unicode block for a different script's glyph-variant system), and
+        # U+17B4-U+17B5, the Khmer inherent vowel signs (present purely to
+        # override a consonant's own default inherent vowel and, standing
+        # alone with no consonant to modify, invisible the same way). All
+        # five are Unicode category 'Mn' (nonspacing mark) -- the identical
+        # category the variation-selector fix above already had to look
+        # past once, since 'Mn' also holds ordinary diacritics that *do*
+        # render on their own -- so a title made entirely of these (e.g.
+        # three U+034F characters) sailed through every check above as
+        # three "real" characters, reaching <title>/<h1>/the index link
+        # with no visible or accessible text at all, the same failure mode
+        # as all five prior fixes.
+        return code == 0x034F or 0x180B <= code <= 0x180D or code == 0x180F or 0x17B4 <= code <= 0x17B5
 
     return all(_invisible(ch) for ch in value)
 

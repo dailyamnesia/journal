@@ -743,6 +743,80 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("title", str(ctx.exception))
 
+    def test_combining_grapheme_joiner_only_title_names_the_file(self):
+        # A title made entirely of U+034F COMBINING GRAPHEME JOINER is just
+        # as blank-looking as the whitespace-only, zero-width-only,
+        # control-character-only, variation-selector-only, and
+        # Hangul-filler-only cases already caught above, but slips past
+        # _is_blank() through a gap none of those fixes closed: CGJ exists
+        # only to block otherwise-automatic combining/ligating behavior
+        # between the two characters on either side of it, and renders as
+        # nothing at all when it appears with no such neighbors -- exactly
+        # as invisible as a Cf character, a variation selector, or a
+        # Hangul filler -- but the Unicode Character Database files it
+        # under general category 'Mn' (nonspacing mark), the same category
+        # the variation-selector check above already had to look past once
+        # since 'Mn' also holds ordinary diacritics that render visibly on
+        # their own. _is_blank() only ever treated a character as blank via
+        # `str.isspace()`, category 'Cf', the variation-selector ranges, or
+        # the four explicit Hangul filler code points, so it saw three
+        # "real" (non-blank) characters here and the required-key check
+        # passed. The post then built successfully with a `<title>`/`<h1>`
+        # and an index link that are all present in the markup but carry no
+        # visible or accessible text at all -- the same failure mode as the
+        # five prior fixes, just via a sixth character class none of them
+        # checked for.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "͏͏͏"\ndate: 2026-01-01\n---\n'
+                'Body with a combining-grapheme-joiner-only title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
+    def test_mongolian_free_variation_selector_only_title_names_the_file(self):
+        # Same root cause as the combining-grapheme-joiner case directly
+        # above -- U+180B/U+180C/U+180D/U+180F, the Mongolian free variation
+        # selectors one through four, are siblings of the U+FE00-U+FE0F
+        # variation-selector block already checked, just a separate Unicode
+        # block used to pick a glyph variant for Mongolian script instead of
+        # CJK, and equally invisible with no base character to modify. Also
+        # category 'Mn', so _is_blank() missed it the same way.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "᠋᠌᠍᠏"\ndate: 2026-01-01\n---\n'
+                'Body with a Mongolian-free-variation-selector-only title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
+    def test_khmer_inherent_vowel_only_title_names_the_file(self):
+        # Same root cause again -- U+17B4/U+17B5, the Khmer inherent vowel
+        # signs AQ/AA, exist only to override a consonant's own default
+        # inherent vowel and render as nothing when they appear with no
+        # consonant to modify. Also category 'Mn', so _is_blank() missed it
+        # the same way as the combining-grapheme-joiner and Mongolian cases
+        # above.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_text(
+                '---\ntitle: "឴឵"\ndate: 2026-01-01\n---\n'
+                'Body with a Khmer-inherent-vowel-only title.\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
     def test_non_iso_date_format_names_the_file(self):
         # A non-empty date in the wrong shape (a human-written "Aug 30,
         # 2026", or a copy-paste of "08/30/2026") used to sail straight
