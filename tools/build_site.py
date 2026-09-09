@@ -176,57 +176,68 @@ def _is_blank(value):
     space case once did, with no base character anywhere in the value for
     the selectors to attach to.
     """
-    def _invisible(ch):
-        if ch.isspace() or unicodedata.category(ch) == "Cf":
-            return True
-        code = ord(ch)
-        if 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF:
-            return True
-        # Hangul filler characters -- U+115F HANGUL CHOSEONG FILLER, U+1160
-        # HANGUL JUNGSEONG FILLER, U+3164 HANGUL FILLER, and U+FFA0
-        # HALFWIDTH HANGUL FILLER -- are placeholder code points that exist
-        # so an incomplete Hangul jamo sequence still has a slot to combine
-        # into a syllable block; none of the four carry a glyph of their
-        # own, the same "renders as nothing" trait as a Cf character or a
-        # variation selector (and the same trick some chat platforms'
-        # "blank name" workarounds actually use). But the Unicode Character
-        # Database files all four under general category 'Lo' (letter,
-        # other), not 'Cf' or 'Mn': for the purposes of Hangul composition
-        # they behave as ordinary letters, so neither check above catches
-        # them. A title made entirely of these (e.g. `title: "ㅤㅤㅤ"`,
-        # three U+3164 characters) is exactly as blank-looking as the
-        # zero-width-space and variation-selector cases already caught
-        # above, but used to sail past _is_blank() -- and therefore the
-        # `not meta.get(required)` check in parse_post() -- as three "real"
-        # characters, reaching <title>/<h1>/the index link as markup that's
-        # present but carries no visible or accessible text at all.
-        if code in (0x115F, 0x1160, 0x3164, 0xFFA0):
-            return True
-        # A sixth class, sharing the same root cause as the four checks
-        # above -- a code point with no glyph of its own, meant only to
-        # modify or separate the characters around it -- but filed under
-        # yet another general category that isn't whitespace, 'Cf', a
-        # variation selector, or a Hangul filler: U+034F COMBINING GRAPHEME
-        # JOINER (used to block otherwise-automatic combining/ligating
-        # behavior between two adjacent characters, invisible with nothing
-        # to join when it appears alone) and U+180B-U+180D/U+180F, the
-        # Mongolian free variation selectors one through four (siblings of
-        # the U+FE00-U+FE0F block already checked above, just a separate
-        # Unicode block for a different script's glyph-variant system), and
-        # U+17B4-U+17B5, the Khmer inherent vowel signs (present purely to
-        # override a consonant's own default inherent vowel and, standing
-        # alone with no consonant to modify, invisible the same way). All
-        # five are Unicode category 'Mn' (nonspacing mark) -- the identical
-        # category the variation-selector fix above already had to look
-        # past once, since 'Mn' also holds ordinary diacritics that *do*
-        # render on their own -- so a title made entirely of these (e.g.
-        # three U+034F characters) sailed through every check above as
-        # three "real" characters, reaching <title>/<h1>/the index link
-        # with no visible or accessible text at all, the same failure mode
-        # as all five prior fixes.
-        return code == 0x034F or 0x180B <= code <= 0x180D or code == 0x180F or 0x17B4 <= code <= 0x17B5
+    return all(_is_invisible_char(ch) for ch in value)
 
-    return all(_invisible(ch) for ch in value)
+
+def _is_invisible_char(ch):
+    """True if `ch` renders as nothing -- ordinary whitespace, a Cf-category
+    Unicode formatting character, a variation selector, a Hangul filler, or
+    one of the other invisible-but-not-whitespace code points enumerated
+    below. Factored out of `_is_blank()` (see its docstring for the full
+    history of why each of these classes needed its own check) so the same
+    "is this invisible" test can be reused anywhere a caller needs to tell
+    a genuinely visible character apart from one that merely occupies a
+    string position -- see `_has_invisible_boundary()` below for the other
+    caller.
+    """
+    if ch.isspace() or unicodedata.category(ch) == "Cf":
+        return True
+    code = ord(ch)
+    if 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF:
+        return True
+    # Hangul filler characters -- U+115F HANGUL CHOSEONG FILLER, U+1160
+    # HANGUL JUNGSEONG FILLER, U+3164 HANGUL FILLER, and U+FFA0
+    # HALFWIDTH HANGUL FILLER -- are placeholder code points that exist
+    # so an incomplete Hangul jamo sequence still has a slot to combine
+    # into a syllable block; none of the four carry a glyph of their
+    # own, the same "renders as nothing" trait as a Cf character or a
+    # variation selector (and the same trick some chat platforms'
+    # "blank name" workarounds actually use). But the Unicode Character
+    # Database files all four under general category 'Lo' (letter,
+    # other), not 'Cf' or 'Mn': for the purposes of Hangul composition
+    # they behave as ordinary letters, so neither check above catches
+    # them. A title made entirely of these (e.g. `title: "ㅤㅤㅤ"`,
+    # three U+3164 characters) is exactly as blank-looking as the
+    # zero-width-space and variation-selector cases already caught
+    # above, but used to sail past _is_blank() -- and therefore the
+    # `not meta.get(required)` check in parse_post() -- as three "real"
+    # characters, reaching <title>/<h1>/the index link as markup that's
+    # present but carries no visible or accessible text at all.
+    if code in (0x115F, 0x1160, 0x3164, 0xFFA0):
+        return True
+    # A sixth class, sharing the same root cause as the four checks
+    # above -- a code point with no glyph of its own, meant only to
+    # modify or separate the characters around it -- but filed under
+    # yet another general category that isn't whitespace, 'Cf', a
+    # variation selector, or a Hangul filler: U+034F COMBINING GRAPHEME
+    # JOINER (used to block otherwise-automatic combining/ligating
+    # behavior between two adjacent characters, invisible with nothing
+    # to join when it appears alone) and U+180B-U+180D/U+180F, the
+    # Mongolian free variation selectors one through four (siblings of
+    # the U+FE00-U+FE0F block already checked above, just a separate
+    # Unicode block for a different script's glyph-variant system), and
+    # U+17B4-U+17B5, the Khmer inherent vowel signs (present purely to
+    # override a consonant's own default inherent vowel and, standing
+    # alone with no consonant to modify, invisible the same way). All
+    # five are Unicode category 'Mn' (nonspacing mark) -- the identical
+    # category the variation-selector fix above already had to look
+    # past once, since 'Mn' also holds ordinary diacritics that *do*
+    # render on their own -- so a title made entirely of these (e.g.
+    # three U+034F characters) sailed through every check above as
+    # three "real" characters, reaching <title>/<h1>/the index link
+    # with no visible or accessible text at all, the same failure mode
+    # as all five prior fixes.
+    return code == 0x034F or 0x180B <= code <= 0x180D or code == 0x180F or 0x17B4 <= code <= 0x17B5
 
 
 def parse_post(path):
@@ -509,7 +520,62 @@ _BOLD_RE = re.compile(r"\*\*([^*\s](?:(?:[^*]|" + _ITALIC_INNER + r")*[^*\s])?)\
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\s](?:[^*]*[^*\s])?)(?<!\*)\*(?!\*)")
 
 
+def _has_invisible_boundary(text):
+    """True if `text` -- a **bold**/*italic* match's own captured middle --
+    starts or ends on a character `_is_invisible_char()` treats as
+    rendering to nothing, rather than a genuinely visible one.
+
+    _BOLD_RE/_ITALIC_RE's own `[^*\\s]` boundary requirement exists so a
+    literal, space-delimited "*" (e.g. the multiplication in "3 * 4 * 5")
+    isn't misread as an emphasis delimiter -- see the comment above these
+    patterns. But `\\s`, like `str.isspace()` elsewhere in this file, only
+    recognizes *whitespace* as a non-content boundary; an invisible-but-
+    not-whitespace character sitting in exactly that spot (e.g. a zero-
+    width space pasted in immediately after the "*", from
+    "3 *​4​* 5 = 60") is neither "*" nor whitespace to the regex,
+    so it satisfies `[^*\\s]` and the match succeeds anyway -- reintroducing
+    the identical literal-asterisk-as-emphasis failure the multiplication
+    case was fixed for, just through a character invisible to `\\s` instead
+    of one blank to the eye. render_inline("3 *​4​* 5 = 60") used
+    to render "3 <em>​4​</em> 5 = 60" -- a real <em> wrapped
+    around what still visually reads as bare multiplication -- while
+    _summary() of the same text silently dropped the "*" characters
+    instead, both treating the invisible characters as if they were the
+    ordinary spaces they're standing in for. Rejecting a match whose own
+    boundary character is invisible (the same test `_is_blank()` already
+    applies to a whole frontmatter value, applied here to just the two
+    edge characters) keeps both renderers leaving it as literal text
+    instead, exactly as they already do for a literal space.
+    """
+    return _is_invisible_char(text[0]) or _is_invisible_char(text[-1])
+
+
+def _italic_replace(match):
+    inner = match.group(1)
+    if _has_invisible_boundary(inner):
+        return match.group(0)
+    return f"<em>{inner}</em>"
+
+
+def _italic_strip_replace(match):
+    # _summary()'s plain-text sibling of _italic_replace() above -- see
+    # _has_invisible_boundary() for why a match can still need rejecting
+    # here even though it already satisfied _ITALIC_RE's own boundary
+    # class.
+    inner = match.group(1)
+    if _has_invisible_boundary(inner):
+        return match.group(0)
+    return inner
+
+
 def _bold_replace(match):
+    # A bold match whose own captured text starts or ends on an invisible
+    # character (see _has_invisible_boundary()) is exactly as much a false
+    # positive as the nested-italic case below, just at the outer <strong>
+    # level instead of the inner <em> one -- left as literal text rather
+    # than wrapped.
+    if _has_invisible_boundary(match.group(1)):
+        return match.group(0)
     # Convert any nested *italic* run inside the bold match's own captured
     # text to <em> right here, before the <strong> wrapper is spliced back
     # into the string -- not left for the later, separate _ITALIC_RE.sub()
@@ -530,7 +596,7 @@ def _bold_replace(match):
     # string closes the gap: by the time _ITALIC_RE.sub() runs afterward,
     # there's no raw "*" left inside this match's output for it to trip
     # over.
-    inner = _ITALIC_RE.sub(r"<em>\1</em>", match.group(1))
+    inner = _ITALIC_RE.sub(_italic_replace, match.group(1))
     return f"<strong>{inner}</strong>"
 
 
@@ -554,7 +620,9 @@ def _bold_strip_replace(match):
     # way render_inline() does. Resolving it here, scoped to just this
     # match's own captured text, keeps _summary() in sync with render_inline()
     # on which "*" characters a bold span actually consumes.
-    return _ITALIC_RE.sub(r"\1", match.group(1))
+    if _has_invisible_boundary(match.group(1)):
+        return match.group(0)
+    return _ITALIC_RE.sub(_italic_strip_replace, match.group(1))
 
 
 def render_inline(text):
@@ -564,7 +632,7 @@ def render_inline(text):
     # e.g. `*not italic*` isn't itself reinterpreted as markdown.
     text, code_spans = _stash_code_spans(text)
     text = _BOLD_RE.sub(_bold_replace, text)
-    text = _ITALIC_RE.sub(r"<em>\1</em>", text)
+    text = _ITALIC_RE.sub(_italic_replace, text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
     return text
@@ -749,7 +817,7 @@ def _summary(body):
     # became "2a") rather than only removing real markdown delimiters.
     text, code_spans = _stash_code_spans(" ".join(paragraph))
     text = _BOLD_RE.sub(_bold_strip_replace, text)
-    text = _ITALIC_RE.sub(r"\1", text)
+    text = _ITALIC_RE.sub(_italic_strip_replace, text)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", code)
     if len(text) > 280:

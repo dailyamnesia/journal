@@ -74,6 +74,40 @@ class TestRenderInline(unittest.TestCase):
             "2 ** 3 ** 4 = huge",
         )
 
+    def test_invisible_unicode_character_adjacent_to_asterisk_is_not_treated_as_an_emphasis_boundary(self):
+        # test_standalone_multiplication_asterisks_are_not_treated_as_emphasis
+        # above relies on _ITALIC_RE/_BOLD_RE's `[^*\s]` boundary check: the
+        # character immediately touching a "*" must not be whitespace, so a
+        # literal, space-flanked "*" (e.g. "3 * 4 * 5") isn't misread as an
+        # emphasis delimiter. But `\s` only recognizes actual whitespace --
+        # a zero-width space (U+200B) sitting in that exact spot is neither
+        # "*" nor whitespace to the regex, so it satisfies `[^*\s]` and the
+        # match succeeds anyway, even though it's visually indistinguishable
+        # from the already-protected space-flanked case.
+        # render_inline("3 *​4​* 5 = 60") used to render
+        # "3 <em>​4​</em> 5 = 60" -- a real <em> wrapped around
+        # what still visually reads as bare multiplication.
+        zwsp = "​"
+        text = f"3 *{zwsp}4{zwsp}* 5 = 60"
+        self.assertEqual(build_site.render_inline(text), text)
+
+    def test_invisible_unicode_character_adjacent_to_bold_asterisks_is_not_treated_as_a_boundary(self):
+        zwsp = "​"
+        text = f"**{zwsp}bold{zwsp}**"
+        self.assertEqual(build_site.render_inline(text), text)
+
+    def test_invisible_unicode_boundary_on_a_nested_italic_leaves_only_that_span_literal(self):
+        # An invisible boundary on a *nested* italic run inside an otherwise
+        # well-formed **bold** span must reject only that inner match, not
+        # the outer bold -- the outer <strong> still has genuinely visible
+        # boundary characters ("b" and "e" here) and should still be wrapped.
+        zwsp = "​"
+        text = f"**bold *{zwsp}text{zwsp}* more**"
+        self.assertEqual(
+            build_site.render_inline(text),
+            f"<strong>bold *{zwsp}text{zwsp}* more</strong>",
+        )
+
     def test_emphasis_with_internal_space_still_works(self):
         self.assertEqual(
             build_site.render_inline("*two words*"),
@@ -426,6 +460,18 @@ class TestSummary(unittest.TestCase):
         self.assertEqual(
             build_site._summary(body), "The trick was 3 * 4 * 5 = 60, done by hand."
         )
+
+    def test_invisible_unicode_character_adjacent_to_asterisk_is_not_treated_as_an_emphasis_boundary(self):
+        # _summary()'s sibling of
+        # TestRenderInline.test_invisible_unicode_character_adjacent_to_asterisk_is_not_treated_as_an_emphasis_boundary
+        # above: _summary() reuses the same _BOLD_RE/_ITALIC_RE (and their
+        # invisible-boundary check), so a zero-width space standing in for
+        # an ordinary space next to a literal "*" must stay literal here
+        # too, not have its asterisks silently stripped as if it were real
+        # emphasis markup.
+        zwsp = "​"
+        body = f"The trick was 3 *{zwsp}4{zwsp}* 5 = 60, done by hand."
+        self.assertEqual(build_site._summary(body), body)
 
     def test_code_span_content_is_not_further_stripped_of_backticks_or_asterisks(self):
         # _summary() used to run a blanket `re.sub(r"[`*]", "", ...)` over
