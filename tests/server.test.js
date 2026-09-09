@@ -432,6 +432,146 @@ test('server: a symlink swapped mid-request cannot bypass the realpath containme
   );
 });
 
+test('server: the resolved target itself swapped for a symlink between the containment check and the open cannot bypass containment', async (t) => {
+  // Regression test: the test above covers a symlink at the *requested*
+  // path being swapped -- but fs.realpath(filePath, ...) and the later
+  // fs.open(real, ...) are two separate async hops regardless of whether
+  // the requested path was ever a symlink at all. If the plain file sitting
+  // at `real` itself -- not some earlier symlink hop, `real` is already the
+  // fully-resolved path the containment check approved -- gets replaced
+  // with a symlink pointing outside publicDir in the window between those
+  // two hops, fs.open still re-resolves it at the moment it actually runs
+  // and hands back an fd for the new target, with the containment check
+  // none the wiser, since it already ran against the old, safe target.
+  // Confirmed directly: a real separate OS process continuously replacing a
+  // plain requested file with a symlink to a secret file outside publicDir
+  // (and back), raced against 500 real concurrent requests for that exact
+  // file, leaked the secret's contents on a real, nonzero fraction of them.
+  const dir = makePublicDir(t);
+  const targetPath = path.join(dir, 'target.html');
+  fs.writeFileSync(targetPath, 'safe content');
+
+  const secretPath = path.join(os.tmpdir(), `server-test-fdrace-secret-${process.pid}.txt`);
+  const secretMarker = 'FDRACE_SECRET_SHOULD_NEVER_BE_SERVED';
+  fs.writeFileSync(secretPath, secretMarker);
+  t.after(() => fs.rmSync(secretPath, { force: true }));
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const { spawn } = require('node:child_process');
+  const tmpPath = `${targetPath}.tmp`;
+  const swapperScript = `
+    const fs = require('fs');
+    const targetPath = ${JSON.stringify(targetPath)};
+    const tmpPath = ${JSON.stringify(tmpPath)};
+    const secretPath = ${JSON.stringify(secretPath)};
+    while (true) {
+      try {
+        fs.symlinkSync(secretPath, tmpPath);
+        fs.renameSync(tmpPath, targetPath);
+        fs.writeFileSync(tmpPath, 'safe content');
+        fs.renameSync(tmpPath, targetPath);
+      } catch {}
+    }
+  `;
+  const swapper = spawn(process.execPath, ['-e', swapperScript]);
+  t.after(() => swapper.kill());
+
+  // Same rationale as the symlink-swap test above: the race needs a
+  // genuinely separate OS process, not a same-event-loop loop, to reliably
+  // land inside the gap between fs.realpath's and fs.open's async hops.
+  await new Promise((r) => setTimeout(r, 100));
+
+  const attempts = 300;
+  let leaked = 0;
+  await Promise.all(Array.from({ length: attempts }, () => new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /target.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    const chunks = [];
+    sock.on('data', (c) => chunks.push(c));
+    sock.on('error', () => resolve());
+    sock.on('close', () => {
+      if (Buffer.concat(chunks).toString().includes(secretMarker)) leaked++;
+      resolve();
+    });
+  })));
+
+  swapper.kill();
+
+  assert.equal(
+    leaked,
+    0,
+    `the resolved target swapped for a symlink between the containment check and the open must never let a visitor read its post-swap target (leaked on ${leaked}/${attempts} requests)`
+  );
+});
+
+test('server: a 404.html swapped for a symlink between the containment check and the open cannot bypass containment', async (t) => {
+  // Same gap as the test above, in serveNotFound()'s own, separate
+  // realpath-then-open pair for 404.html. Confirmed directly against the
+  // unfixed code: leaked the secret marker on a real, nonzero fraction of
+  // 500 concurrent requests for a nonexistent path.
+  const dir = makePublicDir(t);
+  const notFoundPath = path.join(dir, '404.html');
+
+  const secretPath = path.join(os.tmpdir(), `server-test-fdrace-404secret-${process.pid}.txt`);
+  const secretMarker = 'FDRACE_404_SECRET_SHOULD_NEVER_BE_SERVED';
+  fs.writeFileSync(secretPath, secretMarker);
+  t.after(() => fs.rmSync(secretPath, { force: true }));
+
+  const server = http.createServer(createRequestHandler(dir));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  t.after(() => server.close());
+
+  const { spawn } = require('node:child_process');
+  const tmpPath = `${notFoundPath}.tmp`;
+  const swapperScript = `
+    const fs = require('fs');
+    const notFoundPath = ${JSON.stringify(notFoundPath)};
+    const tmpPath = ${JSON.stringify(tmpPath)};
+    const secretPath = ${JSON.stringify(secretPath)};
+    while (true) {
+      try {
+        fs.symlinkSync(secretPath, tmpPath);
+        fs.renameSync(tmpPath, notFoundPath);
+        fs.writeFileSync(tmpPath, '<h1>missing</h1>');
+        fs.renameSync(tmpPath, notFoundPath);
+      } catch {}
+    }
+  `;
+  const swapper = spawn(process.execPath, ['-e', swapperScript]);
+  t.after(() => swapper.kill());
+
+  await new Promise((r) => setTimeout(r, 100));
+
+  const attempts = 300;
+  let leaked = 0;
+  await Promise.all(Array.from({ length: attempts }, () => new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write('GET /this-does-not-exist HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    const chunks = [];
+    sock.on('data', (c) => chunks.push(c));
+    sock.on('error', () => resolve());
+    sock.on('close', () => {
+      if (Buffer.concat(chunks).toString().includes(secretMarker)) leaked++;
+      resolve();
+    });
+  })));
+
+  swapper.kill();
+
+  assert.equal(
+    leaked,
+    0,
+    `404.html swapped for a symlink between the containment check and the open must never let a visitor read its post-swap target (leaked on ${leaked}/${attempts} requests)`
+  );
+});
+
 test('server: a request that resolves to a real directory gets a clean 404, not a hung-up connection', async (t) => {
   // Regression test: /posts is a real directory in the actual build output
   // (unlinked, but reachable by request), and resolveRequestPath's boundary

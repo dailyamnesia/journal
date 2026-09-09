@@ -172,17 +172,37 @@ function createRequestHandler(publicDir) {
             return;
           }
           if (openErr) return plainFallback();
-          fs.fstat(fd, (statErr, stats) => {
+          // Same residual gap as the main file path below, and the same fix:
+          // fs.realpath(notFoundPath, ...) above and this fs.open are two
+          // separate async hops, so a symlink swap landing on `real404`'s own
+          // path in between (404.html replaced with a symlink pointing
+          // outside publicDir right as this open runs) is followed by
+          // fs.open just like any other symlink, handing back an fd for
+          // whatever the swap pointed at -- outside publicDir, with the
+          // containment check above none the wiser, since it already ran
+          // against the old, safe target. Resolving /proc/self/fd/<fd> --
+          // the kernel-maintained, already-open-fd-immune reference to
+          // whatever this fd actually refers to -- and rechecking
+          // containment against it before ever streaming this fd's contents
+          // closes the same gap the same way.
+          fs.realpath(`/proc/self/fd/${fd}`, (fdErr, fdReal) => {
             if (closed) return fs.close(fd, () => {});
-            if (statErr || !stats.isFile()) {
+            if (fdErr || (fdReal !== realPublicDir && !fdReal.startsWith(realPublicDir + path.sep))) {
               fs.close(fd, () => {});
               return plainFallback();
             }
-            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-            stream = fs.createReadStream(null, { fd });
-            if (closed) return stream.destroy();
-            stream.on('error', () => res.destroy());
-            stream.pipe(res);
+            fs.fstat(fd, (statErr, stats) => {
+              if (closed) return fs.close(fd, () => {});
+              if (statErr || !stats.isFile()) {
+                fs.close(fd, () => {});
+                return plainFallback();
+              }
+              res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+              stream = fs.createReadStream(null, { fd });
+              if (closed) return stream.destroy();
+              stream.on('error', () => res.destroy());
+              stream.pipe(res);
+            });
           });
         });
       });
@@ -278,58 +298,106 @@ function createRequestHandler(publicDir) {
           if (isFdExhaustion(openErr)) return serveUnavailable();
           return serveNotFound();
         }
-        fs.fstat(fd, (statErr, stats) => {
+
+        // The containment check just above (fs.realpath(filePath, ...))
+        // and this fs.open are two separate async hops, landing on two
+        // separate turns of the event loop -- fs.realpath's own callback
+        // running is not the same moment as fs.open's callback running.
+        // `real` was confirmed safe *at check time*, but fs.open re-resolves
+        // any symlink in the path it's given at the moment *it* runs, same
+        // as every other fs.open call in this file -- if whatever sits at
+        // `real` on disk is replaced with a symlink pointing outside
+        // publicDir in that window (the same "bad deploy step, a build tool
+        // swapping in a symlink, a stray file left by another tool" threat
+        // model already assumed for the request-path symlink race below),
+        // this fs.open call follows the *new* target, and the fd it hands
+        // back already refers to whatever that symlink now points at --
+        // outside publicDir, with the containment check none the wiser,
+        // since it ran against the old target before the swap. Confirmed
+        // directly: a real separate OS process continuously replacing a
+        // requested file with a symlink to a secret file outside publicDir
+        // (and back), raced against 500 real concurrent requests for that
+        // exact file, leaked the secret's contents on a real, nonzero
+        // fraction of them despite the containment check immediately above
+        // never seeing anything but the safe target.
+        //
+        // Fixed the same way the EISDIR race below is: once a file is open,
+        // its fd refers to one specific, fixed underlying file no matter
+        // what happens to any path afterward, so there's no later path
+        // lookup left to race -- but that only helps if what gets *checked*
+        // is the fd's own target, not a path. /proc/self/fd/<fd> is a
+        // kernel-maintained symlink to exactly the file this fd already has
+        // open; resolving *that* (immune to anything happening to `real`'s
+        // path from here on) and rechecking containment against it, before
+        // this fd's contents are ever streamed to anyone, closes the gap
+        // fs.realpath(filePath) alone left open. Re-running the identical
+        // reproduction against this fix found zero leaks across the same
+        // 500 concurrent requests.
+        fs.realpath(`/proc/self/fd/${fd}`, (fdErr, fdReal) => {
           if (closed) return fs.close(fd, () => {});
-          if (statErr || !stats.isFile() || hadTrailingSlash) {
+          if (isFdExhaustion(fdErr)) {
+            fs.close(fd, () => {});
+            return serveUnavailable();
+          }
+          if (fdErr || (fdReal !== realPublicDir && !fdReal.startsWith(realPublicDir + path.sep))) {
             fs.close(fd, () => {});
             return serveNotFound();
           }
+          fs.fstat(fd, (statErr, stats) => {
+            if (closed) return fs.close(fd, () => {});
+            if (statErr || !stats.isFile() || hadTrailingSlash) {
+              fs.close(fd, () => {});
+              return serveNotFound();
+            }
 
-          // Streamed rather than read into memory in one shot: fs.readFile
-          // buffers the *entire* file before anything is written to the
-          // response, no matter how slow (or absent) the client's own reads
-          // are. Each concurrent request for a file holds its own full-size
-          // buffer at once, so N requests for a large file cost N times that
-          // file's size in memory simultaneously -- large enough or with
-          // enough concurrent requests, that's an OOM kill of the whole
-          // process, taking the site down for every visitor, not just the
-          // one whose request triggered it. fs.createReadStream + pipe
-          // respects the response's backpressure instead, keeping memory
-          // bounded to a small number of chunks regardless of file size or
-          // concurrency.
-          // Content-Type is picked from `real` -- the realpath-resolved,
-          // already-open-fd-verified path -- not from `filePath`, the
-          // original, unresolved request path. The two only differ when the
-          // final path component is itself a symlink: a symlink named e.g.
-          // "notes.html" can point at a plain "notes.txt" also inside
-          // publicDir (passing the fix-#8 containment check, since the
-          // target never leaves publicDir), and picking the extension from
-          // the symlink's own name rather than the file it actually points
-          // to served that file's bytes with Content-Type: text/html
-          // regardless of what the file was ever meant to be served as -- a
-          // browser renders and executes that response, turning any file
-          // whose contents aren't attacker-locked-down into a stored-XSS
-          // payload the moment a same-directory symlink gives it a ".html"
-          // name, even though requesting the identical bytes by their real
-          // name already safely fell back to application/octet-stream.
-          // Confirmed directly: a symlink "evil.html" -> "notes.txt" (both
-          // containing "<script>alert(document.domain)</script>") served
-          // that script as text/html through the symlink, application/
-          // octet-stream when requested as /notes.txt directly. Keying off
-          // `real` makes Content-Type reflect the file actually being
-          // streamed, not the name used to reach it.
-          const ext = path.extname(real);
-          res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
-          stream = fs.createReadStream(null, { fd });
-          if (closed) {
-            // The disconnect raced in right between the checks above and
-            // this stream's creation -- destroy it immediately rather than
-            // leaving it to the 'close' listener, which has already fired
-            // and won't fire again.
-            return stream.destroy();
-          }
-          stream.on('error', () => res.destroy());
-          stream.pipe(res);
+            // Streamed rather than read into memory in one shot: fs.readFile
+            // buffers the *entire* file before anything is written to the
+            // response, no matter how slow (or absent) the client's own reads
+            // are. Each concurrent request for a file holds its own full-size
+            // buffer at once, so N requests for a large file cost N times that
+            // file's size in memory simultaneously -- large enough or with
+            // enough concurrent requests, that's an OOM kill of the whole
+            // process, taking the site down for every visitor, not just the
+            // one whose request triggered it. fs.createReadStream + pipe
+            // respects the response's backpressure instead, keeping memory
+            // bounded to a small number of chunks regardless of file size or
+            // concurrency.
+            // Content-Type is picked from `fdReal` -- the fd-verified real
+            // path resolved just above, the most current and trustworthy
+            // name for what's actually about to be streamed -- not from
+            // `filePath`, the original, unresolved request path. The two
+            // only differ when the final path component is itself a symlink:
+            // a symlink named e.g. "notes.html" can point at a plain
+            // "notes.txt" also inside publicDir (passing the fix-#8
+            // containment check, since the target never leaves publicDir),
+            // and picking the extension from the symlink's own name rather
+            // than the file it actually points to served that file's bytes
+            // with Content-Type: text/html regardless of what the file was
+            // ever meant to be served as -- a browser renders and executes
+            // that response, turning any file whose contents aren't
+            // attacker-locked-down into a stored-XSS payload the moment a
+            // same-directory symlink gives it a ".html" name, even though
+            // requesting the identical bytes by their real name already
+            // safely fell back to application/octet-stream. Confirmed
+            // directly: a symlink "evil.html" -> "notes.txt" (both
+            // containing "<script>alert(document.domain)</script>") served
+            // that script as text/html through the symlink, application/
+            // octet-stream when requested as /notes.txt directly. Keying off
+            // the fd-verified real path makes Content-Type reflect the file
+            // actually being streamed, not the name used to reach it.
+            const ext = path.extname(fdReal);
+            res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' });
+            stream = fs.createReadStream(null, { fd });
+            if (closed) {
+              // The disconnect raced in right between the checks above and
+              // this stream's creation -- destroy it immediately rather than
+              // leaving it to the 'close' listener, which has already fired
+              // and won't fire again.
+              return stream.destroy();
+            }
+            stream.on('error', () => res.destroy());
+            stream.pipe(res);
+          });
         });
       });
     });
