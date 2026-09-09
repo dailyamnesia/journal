@@ -862,6 +862,42 @@ if ! sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>&1; t
   # Copying to a same-directory temp file and `mv`-ing it into place
   # mirrors what rsync already does and closes the same gap here.
   sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_SERVER.new"
+  # The same permission-drift shape already fixed twice for the content
+  # sync (`chmod 755` on $BUILD_DIR and $BUILD_DIR/posts, since `mktemp -d`
+  # and Python's default `mkdir` mode each land wherever the invoking
+  # shell's umask leaves them, and rsync -a's -p then carries that mode
+  # onto the live destination) recurs here through a different mechanism:
+  # plain `cp`, with no -p/--preserve, creates a *new* destination file
+  # (this is always the case here, since $LIVE_SERVER.new is a fresh temp
+  # name) at the source's mode filtered through this process's own umask,
+  # not the source's mode verbatim. Under this deploy's ordinary umask
+  # (022) that coincidentally reproduces the source's real 0644, which is
+  # why this went unnoticed -- but under a stricter umask (a hardened
+  # shell profile, a systemd unit's own UMask=, an operator's leftover
+  # `umask 077`) the live server.js file this deploy ships would silently
+  # come out at 0600 instead, on every deploy that actually changes
+  # server.js's content. The subsequent `chown` only ever changes
+  # ownership, never mode, so nothing downstream corrects it. This doesn't
+  # break the live site itself: server.js runs as webapp, which chown
+  # already makes the owner, and an owner can always read its own file
+  # regardless of group/other bits -- but it silently locks out anyone
+  # else (a different admin account, a future backup or monitoring
+  # process) from even reading the script that's actually running, the
+  # same "doesn't break the site, but locks out everyone else" failure
+  # already closed for $LIVE_PUBLIC and $LIVE_PUBLIC/posts, just one file
+  # over and still open here. Confirmed directly: the exact three-line
+  # cp/chown/mv sequence below, run under `umask 077` against a scratch
+  # stand-in for $LIVE_SERVER already at a correct 0644, left it at 0600
+  # afterward; the identical sequence under this deploy's real ordinary
+  # umask (022) left it at 0644, unaffected -- matching the live host's
+  # actual, never-yet-drifted state, the same "reproducible but hasn't
+  # fired here" conclusion already reached for the two rsync-mode fixes.
+  # Pinning the mode explicitly, right after the file is created and
+  # before it's ever linked into place, closes it the same way those two
+  # fixes chmod their own directories right after creation: re-running the
+  # identical umask-077 repro with this chmod in place left the live file
+  # at 0644 regardless of the invoking shell's umask.
+  sudo chmod 644 "$LIVE_SERVER.new"
   sudo chown webapp:webapp "$LIVE_SERVER.new"
   sudo mv "$LIVE_SERVER.new" "$LIVE_SERVER"
   SERVER_CHANGED=true
