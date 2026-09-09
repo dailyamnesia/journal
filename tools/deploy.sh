@@ -846,7 +846,57 @@ with:
 # $REPO_ROOT) resolved to VERSION_B, the untested edit, not VERSION_A, the
 # one both test suites just verified.
 SERVER_CHANGED=false
-if ! sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>&1; then
+# Same exit-code masking already fixed throughout this script (git status
+# --porcelain, parent_is_flock, the reparented-supervisor check, both
+# post-count guards, the node test(...) count, the ps -o user= ownership
+# lookup), in a form specific to sudo: `sudo diff -q A B` exits 1 both when
+# diff itself determines the files genuinely differ, and when sudo refuses
+# to even run diff at all -- no NOPASSWD entry for `diff` specifically (an
+# easy omission: "diff" doesn't look like one of the "real" deploy commands
+# -- rsync/cp/chmod/chown/mv/systemctl -- whoever wrote the sudoers file was
+# thinking of when they whitelisted this script's actual writes), or an
+# expired sudo credential timestamp with no controlling TTY to prompt on
+# (the same no-TTY/no-askpass condition the `sudo -n true` health check
+# above already treats as real, just hitting a later, unguarded sudo call
+# instead of the first one). Both cases exit 1 with `diff` itself never
+# having run, and both stdout and stderr are thrown to /dev/null here, so
+# there was nothing to even notice the difference by eye. Confirmed
+# directly: a real `diff -q` against two genuinely different files exits 1
+# with "Files A and B differ" on *stdout* and empty stderr; a `sudo` that
+# refuses to run `diff` at all (modeling a sudoers file with no entry for
+# it) exits 1 too, with empty stdout and its own "sudo: sorry, user ... is
+# not allowed to execute" message on *stderr* instead -- indistinguishable
+# by exit code alone. Left unfixed, this is worse than the usual silent-pass
+# shape here: since the sudoers gap denies every `sudo diff` call the same
+# way every time, the script would treat server.js as "changed" on *every
+# single deploy*, forever -- and since the follow-on `cp`/`chmod`/`chown`/
+# `mv` calls below don't depend on `diff` having actually run, they'd all
+# still succeed, quietly bouncing the live systemd service on every deploy
+# (dropping in-flight requests) even when server.js never changed, with no
+# FAILED message ever printed to say why.
+#
+# Fixed by capturing stderr instead of discarding it, and only trusting a
+# nonzero exit as "genuinely differs" when stderr came back empty -- a real
+# `diff -q` divergence never writes to stderr at all (its one line of
+# output is on stdout), so any stderr output alongside a nonzero exit means
+# something other than a clean file comparison happened (sudo's own denial,
+# an expired credential, diff itself erroring on an unreadable file) and
+# gets its own FAILED message instead of being silently folded into
+# "changed". Re-running the identical sudo-denies-diff repro with this fix
+# in place now reports the real cause instead of silently redeploying and
+# restarting; re-running the genuine-difference and genuinely-identical
+# cases through the same fixed logic still reach "changed" and "unchanged"
+# respectively, unaffected.
+DIFF_STDERR="$(mktemp)"
+diff_status=0
+sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
+DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
+rm -f "$DIFF_STDERR"
+if [ "$diff_status" -ne 0 ] && [ -n "$DIFF_STDERR_CONTENT" ]; then
+  echo "FAILED: could not reliably compare $BUILD_SRC/tools/server.js against $LIVE_SERVER (sudo diff -q exited $diff_status with unexpected stderr: $DIFF_STDERR_CONTENT) -- refusing to guess whether server.js changed, rather than risk either silently redeploying+restarting on every run or silently skipping a real change." >&2
+  exit 1
+fi
+if [ "$diff_status" -ne 0 ]; then
   echo "== server.js changed, deploying =="
   # Both `rsync` calls above overwrite live content atomically (temp file
   # in the destination dir, renamed into place on success) -- this was the
