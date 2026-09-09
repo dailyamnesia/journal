@@ -476,6 +476,34 @@ class TestSummary(unittest.TestCase):
         self.assertLessEqual(len(summary), 281)
         self.assertNotIn("  ", summary)
 
+    def test_truncation_falls_back_to_a_hard_cut_when_the_word_boundary_is_blank(self):
+        # The word-boundary truncation above (`text[:280].rsplit(" ",
+        # 1)[0]`) assumes the space it splits on has real content in front
+        # of it. That's true when the paragraph is made of ordinary
+        # space-separated words, but a restored code span can put a literal
+        # space at or near the very start of the text -- a single-backtick
+        # span whose content is only whitespace (e.g. "` `", the natural way
+        # to name a literal space character in prose about this renderer's
+        # own code-span rules -- see test_code_span_content_is_not_further_
+        # stripped_of_backticks_or_asterisks above) isn't stripped by
+        # _stash_code_spans() at all, since its "trim one leading/trailing
+        # space" rule only fires when the content isn't *all* spaces. If
+        # that leading space is immediately followed by a long unspaced run
+        # (a hash, a slug, a URL -- easy to hit 280 characters with no other
+        # space before the cutoff), it becomes the *only* space in
+        # text[:280], and rsplit(" ", 1) splits right there: the "before"
+        # half is empty, so the old code produced a summary that was
+        # nothing but "…" -- the entire actual paragraph silently discarded,
+        # in both the feed <summary> and the post's own <meta
+        # name="description">. Falling back to a hard 280-character cut
+        # when the word-boundary split would leave nothing (or only
+        # whitespace) in front of it keeps some of the real text instead of
+        # throwing it all away.
+        body = "` `" + "a1b2c3d4e5" * 30  # 303 chars total, one leading space, then unbroken
+        summary = build_site._summary(body)
+        self.assertTrue(summary.endswith("…"))
+        self.assertGreater(len(summary.rstrip("…").strip()), 0)
+
     def test_empty_for_a_post_with_no_leading_paragraph(self):
         # A post that opens directly with a fenced code block, with no
         # plain-text paragraph before it, has no first paragraph to

@@ -753,7 +753,22 @@ def _summary(body):
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", code)
     if len(text) > 280:
-        text = text[:280].rsplit(" ", 1)[0] + "…"
+        # Splitting on the last space in the truncated window assumes that
+        # space has real content in front of it -- true for ordinary
+        # space-separated words, but a restored code span can leave a
+        # literal space at (or near) the very start of the text (a
+        # single-backtick span whose content is only whitespace, e.g. "` `",
+        # isn't touched by _stash_code_spans()'s "trim one leading/trailing
+        # space" rule, since that rule only fires when the content isn't
+        # *all* spaces). If that leading space is immediately followed by a
+        # long unspaced run, it becomes the *only* space in text[:280], and
+        # rsplit(" ", 1) splits right there -- leaving nothing (or only more
+        # whitespace) before the cut, so the whole paragraph was silently
+        # discarded in favor of a summary that was just "…". Falling back to
+        # a hard cut at 280 characters when the word-boundary split would
+        # otherwise throw away all the text keeps some of it instead.
+        truncated = text[:280].rsplit(" ", 1)[0]
+        text = (truncated if truncated.strip() else text[:280]) + "…"
     return text
 
 
