@@ -716,6 +716,41 @@ if lock_file_was_replaced; then
   exit 1
 fi
 
+# The two checks just above (supervisor still alive, lock file not swapped
+# out from under it) only run once, in the instant right before the
+# sync/deploy section below starts. That section itself -- four rsync
+# passes plus the server.js diff/cp/chmod/chown/mv sequence, all under
+# sudo -- is not one instantaneous statement; on a real deploy it can run
+# for a genuine stretch of wall-clock time, and the lock-holding supervisor
+# can die during that window exactly as easily as in the gap before it. Left
+# unchecked, a supervisor dying mid-sync silently released the lock with
+# nothing in the script ever noticing, letting a second, fully independent
+# deploy.sh acquire the same lock and run its own sync fully concurrently
+# with this one's still-in-progress sync -- the exact two-racing-syncs
+# scenario the lock exists to prevent in the first place, just reached by
+# widening the window instead of skipping the check. `kill -0` on
+# $SUPERVISOR_PPID (looked up fresh above, not the stale $PPID) is the same
+# liveness test used everywhere else in this script; killing only this
+# script's own process ($$, which a bash background job still shares, only
+# a real fork like `ps`/`rsync` gets its own pid) reuses the same
+# TERM-triggers-cleanup path an operator's own Ctrl-C already goes through,
+# so the worktree/build dir this deploy left behind still get cleaned up.
+# Reproduced directly: a scratch copy of this exact self-reexec flock shape,
+# with the supervisor killed mid-"sync" (a stand-in long-running child),
+# never got signaled before this fix -- the child ran to completion every
+# time; with watch_supervisor running in the background, the child received
+# SIGTERM within a couple of seconds of the supervisor dying, every time.
+watch_supervisor() {
+  while sleep 1; do
+    if ! kill -0 "$SUPERVISOR_PPID" 2>/dev/null; then
+      echo "FAILED: this deploy's lock-holding supervisor (pid $SUPERVISOR_PPID) died mid-deploy -- the lock it held may already be released, so a second deploy could already be running concurrently; aborting the rest of this one." >&2
+      kill -TERM "$$" 2>/dev/null
+      return
+    fi
+  done
+}
+watch_supervisor &
+
 echo "== syncing content to $LIVE_PUBLIC =="
 # The post-count guard above deliberately treats "$LIVE_PUBLIC/posts doesn't
 # exist" as a legitimate, expected state on a genuine first-ever deploy
