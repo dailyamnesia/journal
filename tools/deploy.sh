@@ -467,6 +467,34 @@ python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"
 # it, closes the same gap the same way.
 chmod 755 "$BUILD_DIR/posts"
 
+# Same drift as the two chmods above, but for the individual files
+# build_site.py actually writes -- index.html, feed.xml, 404.html,
+# charter.html, favicon.svg, and every posts/*.html page. Each is created
+# via Python's plain write_text()/write_bytes(), which -- exactly like the
+# default mkdir() mode the $BUILD_DIR/posts chmod above already accounts
+# for -- lands wherever this shell's own umask leaves it (0666 minus
+# umask), not at a fixed mode of its own. The two chmods above only ever
+# reached the two *directories*; every rsync pass below still copies each
+# regular file's own individual mode right along with its content (-a
+# implies -p, the same mechanism both directory fixes above already
+# document), so a deploy actually run under a stricter umask (a hardened
+# shell profile, a systemd unit's own UMask=, an operator's leftover
+# `umask 077`) silently drops every synced page down to 0600 on the live
+# site -- the identical "doesn't break the site itself, since server.js's
+# owner can always read its own files, but silently locks out anyone
+# else" failure already closed for $BUILD_DIR, $BUILD_DIR/posts, and
+# $LIVE_SERVER.new (see the cp/chmod/chown/mv sequence further down), just
+# at the one remaining call site none of those fixes ever reached: the
+# actual page content itself. Confirmed directly: building under
+# `umask 077` and running the real four-pass rsync sequence below against
+# a fresh, correctly-644 live site left index.html, feed.xml, 404.html,
+# and every posts/*.html page at 0600 afterward, even with both directory
+# chmods above already in place. Normalizing every regular file under
+# $BUILD_DIR to 644 here, after the build has written all of them and
+# before any rsync pass runs, closes it the same way those two did for
+# their own directories.
+find "$BUILD_DIR" -type f -exec chmod 644 {} +
+
 # No post has ever been removed in this project's history, so a build with
 # fewer post pages than what's already live is a strong signal of a broken
 # build (e.g. posts/ glob resolving empty), not a deliberate deletion — and
