@@ -729,7 +729,16 @@ def render_markdown(body, source="post"):
             # instead of one blockquote containing both paragraphs.
             flush_paragraph()
             content = line[2:].strip() if line.startswith("> ") else ""
-            if content:
+            # A "> " line whose only content is an invisible Unicode
+            # formatting character (e.g. a zero-width space) is just as much
+            # a blank paragraph separator as a bare ">" -- `content` came out
+            # non-empty (str.strip() doesn't remove it) and a plain truthy
+            # check let it through as if it were real text, splicing that
+            # invisible character into the middle of the rendered
+            # blockquote. Using `_is_blank()` here, the same test already
+            # used for a whole blank line and for frontmatter values, closes
+            # that gap the same way.
+            if not _is_blank(content):
                 quote.append(content)
             i += 1
             continue
@@ -822,7 +831,12 @@ def _summary(body):
                 break
             quoting = True
             content = line[2:].strip() if line.startswith("> ") else ""
-            if content:
+            # Mirrors render_markdown()'s own fix: a "> " line holding only
+            # an invisible Unicode formatting character is a blank paragraph
+            # separator, not real content, so it must not be spliced into
+            # the summary as literal (invisible) text (see the matching
+            # comment in render_markdown() for the concrete repro).
+            if not _is_blank(content):
                 paragraph.append(content)
             continue
         if paragraph and quoting:

@@ -435,6 +435,28 @@ class TestRenderMarkdown(unittest.TestCase):
             "<blockquote><p>Para one. Para two.</p></blockquote>",
         )
 
+    def test_invisible_only_quote_line_is_treated_as_blank_not_content(self):
+        # A "> " line whose only content is an invisible Unicode formatting
+        # character (e.g. a zero-width space left behind by a paste) is
+        # exactly the same "blank paragraph separator inside a
+        # multi-paragraph blockquote" case the bare-">" fix above already
+        # covers -- but the content check here was a plain truthy test
+        # (`if content:`), which only recognizes a *literally empty* string
+        # as "no content." `line[2:].strip()` doesn't remove a Cf-category
+        # character (the same gap _is_blank() exists to close everywhere
+        # else in this file, e.g. for a whole blank line or a frontmatter
+        # value), so this line's "content" came out as one non-empty,
+        # invisible character, was appended to the quote's line list, and
+        # was spliced into the middle of the rendered blockquote as literal
+        # (invisible) text: render_markdown("> Para one.\n> ​\n> Para
+        # two.") used to produce "Para one. ​ Para two." instead of
+        # "Para one. Para two." like the equivalent bare-">" separator.
+        body = "> Para one.\n> ​\n> Para two."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>Para one. Para two.</p></blockquote>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -651,6 +673,16 @@ class TestSummary(unittest.TestCase):
         # that ends it (see the matching comment in render_markdown() for
         # the concrete repro of the old behavior).
         body = "> Para one.\n>\n> Para two."
+        self.assertEqual(build_site._summary(body), "Para one. Para two.")
+
+    def test_invisible_only_quote_line_is_treated_as_blank_not_content(self):
+        # _summary()'s sibling of render_markdown()'s equivalent fix above:
+        # a "> " line holding only an invisible Unicode formatting character
+        # (e.g. a zero-width space) survived `line[2:].strip()` as one
+        # non-empty character and was spliced into the summary as literal
+        # invisible text between the two quoted lines, instead of being
+        # treated as a blank paragraph separator like a bare ">" already is.
+        body = "> Para one.\n> ​\n> Para two."
         self.assertEqual(build_site._summary(body), "Para one. Para two.")
 
 
