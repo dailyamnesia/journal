@@ -825,6 +825,25 @@ but isn't actually responding (a hung process, a closed listener), recover
 with:
   sudo systemctl reset-failed dailyamnesia-web.service && sudo systemctl restart dailyamnesia-web.service"
 
+# Extracted into its own function (like parent_is_flock and
+# lock_file_was_replaced above) specifically so it can be exercised in
+# isolation against a stand-in systemctl -- see the timeout reasoning where
+# this is called, a few lines down. 200s gives headroom over systemd's own
+# default TimeoutStopSec (90s) plus TimeoutStartSec (90s) for a restart
+# that's genuinely just slow, not hung, the same margin already reasoned
+# about for server.js's own SHUTDOWN_FALLBACK_MS.
+restart_service() {
+  # Overridable only so a test can exercise the timeout path itself in
+  # bounded time (a fake hung systemctl plus a short override) without
+  # waiting out the real 200s default or patching this file to test it.
+  local restart_timeout="${DEPLOY_SH_SYSTEMCTL_RESTART_TIMEOUT_S:-200}"
+  if ! timeout "$restart_timeout" sudo systemctl restart dailyamnesia-web.service; then
+    echo "FAILED: systemctl restart did not finish within ${restart_timeout}s (or failed) -- a hung systemd/D-Bus manager would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+    echo "$RECOVERY_HINT" >&2
+    return 1
+  fi
+}
+
 # The restart decision can't be gated on the server.js diff alone: if the
 # service is down for a reason unrelated to a code change (a prior restart
 # that itself failed, an OOM-kill, a manual stop) and this deploy has no
@@ -953,13 +972,30 @@ if [ "$diff_status" -ne 0 ]; then
   SERVER_CHANGED=true
 fi
 
-if [ "$SERVER_CHANGED" = true ] || ! sudo systemctl is-active --quiet dailyamnesia-web.service; then
+# `systemctl` talks to systemd over D-Bus -- the same "the call is accepted
+# but the far end never answers" hazard `git fetch` has over TCP (see the
+# fix above), just via a different transport. Every other network/subprocess
+# call in this script that can block on someone else -- git fetch, both test
+# suites -- already got a `timeout` wrapper for exactly this reason; these
+# three `systemctl` calls (this `is-active` check, the `restart` below, and
+# `systemctl show -p MainPID` further down) never did. A wedged systemd
+# manager or a stopped-responding D-Bus broker leaves any of them blocked
+# forever, wedging this deploy right here while it still holds $LOCKFILE,
+# silently blocking every future deploy ("another deploy.sh is already
+# running") with no FAILED message and no other symptom -- identical in
+# shape to the already-fixed git-fetch/test-suite hangs. Reproduced
+# directly: a scratch `systemctl` on PATH that sleeps forever for `restart`
+# specifically (modeling a wedged D-Bus manager) run through the exact
+# `if ! sudo systemctl restart ...; then ...; fi` guard this script used to
+# have, unmodified, hung indefinitely -- only an external `timeout 5`
+# stopped it, at exit 124, since the guard itself had no protection.
+# `is-active` timing out is treated the same as it reporting "not active"
+# (the `!` already in front of it): the safe direction here is to attempt a
+# restart, not to silently proceed as if the service were healthy. 30s is
+# generous for a query that normally completes in milliseconds.
+if [ "$SERVER_CHANGED" = true ] || ! timeout 30 sudo systemctl is-active --quiet dailyamnesia-web.service; then
   echo "== (re)starting service =="
-  if ! sudo systemctl restart dailyamnesia-web.service; then
-    echo "FAILED: systemctl restart didn't succeed." >&2
-    echo "$RECOVERY_HINT" >&2
-    exit 1
-  fi
+  restart_service || exit 1
 else
   echo "== server.js unchanged and service already running, no restart needed =="
 fi
@@ -1039,8 +1075,16 @@ POST_VERIFY_SANITY_FAILED=2
 # unguarded assignment, killed the script via bare `set -e` -- exit 1, only
 # systemctl's own raw stderr, no "FAILED:" message and no
 # $POST_VERIFY_SANITY_FAILED. Guarding it the same way closed it.
-if ! pid="$(systemctl show -p MainPID --value dailyamnesia-web.service)"; then
-  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not query dailyamnesia-web.service's MainPID via systemctl afterward, so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
+# `timeout 30` in front, on top of the guarded assignment above: the
+# assignment alone only catches `systemctl show` itself returning a nonzero
+# exit (e.g. a lost bus connection), not a wedged systemd/D-Bus manager that
+# never returns at all -- the same missing-timeout gap already fixed above
+# for `is-active` and `restart`, just recurring here at the one remaining
+# unwrapped systemctl call site. Left unwrapped, that would hang this
+# deploy indefinitely at the very last step, still holding $LOCKFILE, even
+# though the site itself is already live and verified.
+if ! pid="$(timeout 30 systemctl show -p MainPID --value dailyamnesia-web.service)"; then
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not query dailyamnesia-web.service's MainPID via systemctl afterward (it may have timed out), so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
   exit "$POST_VERIFY_SANITY_FAILED"
 fi
 if [ -z "$pid" ] || [ "$pid" = "0" ]; then
