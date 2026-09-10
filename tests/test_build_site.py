@@ -457,6 +457,29 @@ class TestRenderMarkdown(unittest.TestCase):
             "<blockquote><p>Para one. Para two.</p></blockquote>",
         )
 
+    def test_quote_marker_with_no_space_followed_by_invisible_char_continues_the_blockquote(self):
+        # Same gap as the bare-">" and "> <invisible>" fixes just above, one
+        # character position earlier: a "blank quote separator" line can
+        # also be written as ">" with *no* space at all, immediately
+        # followed by an invisible Unicode formatting character (e.g. a
+        # zero-width space pasted right after the marker instead of a real
+        # space). `line.startswith("> ")` is false (the second character
+        # isn't a literal space) and `line.rstrip() == ">"` is also false
+        # (str.rstrip() only trims *whitespace*, and a Cf-category character
+        # like U+200B isn't whitespace -- the identical blind spot
+        # `_is_blank()` exists everywhere else in this file to close). So
+        # this line fell through to the default paragraph-text branch,
+        # flushing the in-progress quote early, rendering the line itself as
+        # a bogus visible "<p>&gt;​</p>" paragraph, and opening a second,
+        # separate <blockquote> for what followed -- splitting one intended
+        # multi-paragraph blockquote into two, with a stray literal ">"
+        # sandwiched between them.
+        body = "> Para one.\n>​\n> Para two."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>Para one. Para two.</p></blockquote>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -683,6 +706,16 @@ class TestSummary(unittest.TestCase):
         # invisible text between the two quoted lines, instead of being
         # treated as a blank paragraph separator like a bare ">" already is.
         body = "> Para one.\n> ​\n> Para two."
+        self.assertEqual(build_site._summary(body), "Para one. Para two.")
+
+    def test_quote_marker_with_no_space_followed_by_invisible_char_continues_the_blockquote(self):
+        # _summary()'s sibling of render_markdown()'s equivalent fix above:
+        # a ">" with no following space, immediately followed only by an
+        # invisible Unicode formatting character, is a blank paragraph
+        # separator inside a multi-paragraph blockquote, not new content
+        # that ends it -- see the matching test/comment in
+        # TestRenderMarkdown for the concrete repro of the old behavior.
+        body = "> Para one.\n>​\n> Para two."
         self.assertEqual(build_site._summary(body), "Para one. Para two.")
 
 

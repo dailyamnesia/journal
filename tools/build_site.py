@@ -713,7 +713,7 @@ def render_markdown(body, source="post"):
             out.append(f"<h2>{render_inline(line[3:])}</h2>")
             i += 1
             continue
-        if line.startswith("> ") or line.rstrip() == ">":
+        if line.startswith("> ") or (line.startswith(">") and _is_blank(line[1:])):
             # A bare ">" (no trailing content) is a blank line *inside* a
             # blockquote -- the natural way to write a multi-paragraph quote
             # -- not the start of new, unrelated content. Requiring a space
@@ -727,6 +727,21 @@ def render_markdown(body, source="post"):
             # render_markdown("> Para one.\n>\n> Para two.") produced three
             # blocks (two blockquotes sandwiching a stray "&gt;" paragraph)
             # instead of one blockquote containing both paragraphs.
+            #
+            # The bare-">" fix above used `line.rstrip() == ">"`, which only
+            # trims ordinary *whitespace* from the right -- so a ">" with no
+            # real space at all, immediately followed only by an invisible
+            # Unicode formatting character (e.g. a zero-width space pasted
+            # right after the marker), survived rstrip() untouched and
+            # slipped back through the identical gap: `line.rstrip()` came
+            # out as ">​", not ">", so this whole condition was false
+            # and the line fell to the ordinary-paragraph-text branch below,
+            # flushing the quote and rendering a bogus "<p>&gt;​</p>"
+            # exactly like the original bare-">" bug. Checking `_is_blank()`
+            # on everything after the ">" (the same test already used a few
+            # lines down for a "> "-prefixed line's content) closes that
+            # remaining gap the same way, without needing every invisible
+            # character class to also count as `str.rstrip()` whitespace.
             flush_paragraph()
             content = line[2:].strip() if line.startswith("> ") else ""
             # A "> " line whose only content is an invisible Unicode
@@ -821,12 +836,17 @@ def _summary(body):
             if paragraph:
                 break
             continue
-        if line.startswith("> ") or line.rstrip() == ">":
+        if line.startswith("> ") or (line.startswith(">") and _is_blank(line[1:])):
             # Mirrors render_markdown()'s own fix: a bare ">" is a blank
             # line inside a multi-paragraph blockquote, not new content, so
             # it must not be treated as ordinary text that ends the quote
             # (see the matching comment in render_markdown() for the
-            # concrete repro).
+            # concrete repro). Also mirrors render_markdown()'s follow-up
+            # fix for a ">" with no real space at all, immediately followed
+            # only by an invisible Unicode formatting character -- checking
+            # `_is_blank()` on everything after the ">" instead of relying
+            # on `str.rstrip()` (which only trims ordinary whitespace)
+            # catches that case here too.
             if paragraph and not quoting:
                 break
             quoting = True
