@@ -285,6 +285,27 @@ class TestRenderMarkdown(unittest.TestCase):
             "<p>First.</p>\n<p>Second.</p>",
         )
 
+    def test_line_of_only_invisible_unicode_characters_still_separates_paragraphs(self):
+        # A "blank" line that visually looks empty in an editor but actually
+        # contains only invisible Unicode formatting characters (e.g. a
+        # zero-width space left behind by a paste) is exactly the kind of
+        # blank-looking-but-not-`str.isspace()` value `_is_blank()` exists
+        # to catch -- already applied to frontmatter values and to emphasis
+        # match boundaries (see `_has_invisible_boundary()`), but the
+        # paragraph-break check here still used the plain `line.strip() ==
+        # ""` it always had, which only recognizes ordinary whitespace as
+        # "blank". A zero-width space survives that strip untouched (it's
+        # Unicode category 'Cf', not whitespace), so the "blank" line didn't
+        # end the paragraph at all: render_markdown("First.\n​\nSecond.")
+        # used to fold both sentences into one <p>, splicing the invisible
+        # character in as literal (invisible) text between them, instead of
+        # producing two separate paragraphs the way a genuinely blank line
+        # does.
+        self.assertEqual(
+            build_site.render_markdown("First.\n​\nSecond."),
+            "<p>First.</p>\n<p>Second.</p>",
+        )
+
     def test_heading(self):
         self.assertEqual(build_site.render_markdown("## A Heading"), "<h2>A Heading</h2>")
 
@@ -418,6 +439,18 @@ class TestRenderMarkdown(unittest.TestCase):
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
         body = "First paragraph.\n\nSecond paragraph."
+        self.assertEqual(build_site._summary(body), "First paragraph.")
+
+    def test_line_of_only_invisible_unicode_characters_still_separates_paragraphs(self):
+        # Mirrors render_markdown()'s own fix (see the matching test there
+        # for the full explanation): a "blank" line made only of invisible
+        # Unicode formatting characters (e.g. a zero-width space) survives
+        # `line.strip() == ""` untouched, so it used to fail to end the
+        # leading paragraph -- _summary("First paragraph.\n​\nSecond
+        # paragraph.") pulled in the second sentence (and the invisible
+        # character) as if they were part of the same first paragraph,
+        # instead of stopping at the actual paragraph break.
+        body = "First paragraph.\n​\nSecond paragraph."
         self.assertEqual(build_site._summary(body), "First paragraph.")
 
     def test_skips_leading_heading_and_code_fence(self):

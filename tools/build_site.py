@@ -733,7 +733,21 @@ def render_markdown(body, source="post"):
                 quote.append(content)
             i += 1
             continue
-        if line.strip() == "":
+        if _is_blank(line):
+            # A line that *looks* blank in an editor but actually holds only
+            # invisible Unicode formatting characters (e.g. a zero-width
+            # space left behind by a paste) is exactly the kind of value
+            # `_is_blank()` exists to catch -- already applied to
+            # frontmatter values and to emphasis match boundaries (see
+            # `_has_invisible_boundary()`) -- but this paragraph-break check
+            # used to be a plain `line.strip() == ""`, which only recognizes
+            # ordinary whitespace as blank. Such a character survives that
+            # strip untouched, so the "blank" line failed to end the
+            # paragraph at all: render_markdown("First.\n​\nSecond.")
+            # used to fold both sentences into a single <p>, splicing the
+            # invisible character in as literal (invisible) text between
+            # them, instead of producing two separate paragraphs the way a
+            # genuinely blank line does.
             flush_paragraph()
             flush_quote()
             i += 1
@@ -784,7 +798,13 @@ def _summary(body):
             if line.rstrip() == fence_marker:
                 in_code = False
             continue
-        if line.strip() == "":
+        if _is_blank(line):
+            # Mirrors render_markdown()'s own fix for the identical gap: a
+            # line made only of invisible Unicode formatting characters
+            # (e.g. a zero-width space) survives a plain `line.strip() ==
+            # ""` untouched, so it used to fail to end the leading
+            # paragraph here too -- see the matching comment in
+            # render_markdown() for the concrete repro.
             if paragraph:
                 break
             continue
