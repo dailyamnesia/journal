@@ -309,6 +309,25 @@ class TestRenderMarkdown(unittest.TestCase):
     def test_heading(self):
         self.assertEqual(build_site.render_markdown("## A Heading"), "<h2>A Heading</h2>")
 
+    def test_blank_heading_raises_instead_of_producing_an_invisible_h2(self):
+        # A "## " line whose only content is an invisible Unicode formatting
+        # character (e.g. a zero-width space) used to sail straight through
+        # to render_inline() with no check at all -- unlike a required
+        # frontmatter value, a blockquote's blank-continuation line, or a
+        # paragraph-break line, none of which this heading branch shares any
+        # code with. render_markdown("## ​\nSome text.") used to produce
+        # "<h2>​</h2>\n<p>Some text.</p>": a real <h2> element in the
+        # markup that carries no visible or accessible text at all, sitting
+        # right above the paragraph it was meant to introduce. There's no
+        # legitimate reason for a heading to be blank (unlike a blank
+        # blockquote-continuation line), so this now fails the build the
+        # same way an unterminated code fence does -- loud, naming the file.
+        body = "## ​\nSome text."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("posts/example.md", str(ctx.exception))
+        self.assertIn("heading has no visible heading text", str(ctx.exception))
+
     def test_fenced_code_block_not_inline_processed(self):
         body = "```\n*not italic* & <tag>\n```"
         self.assertEqual(

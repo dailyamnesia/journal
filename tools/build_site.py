@@ -710,7 +710,30 @@ def render_markdown(body, source="post"):
         if line.startswith("## "):
             flush_paragraph()
             flush_quote()
-            out.append(f"<h2>{render_inline(line[3:])}</h2>")
+            heading_text = line[3:]
+            # A "## " line whose only content is an invisible Unicode
+            # formatting character (e.g. a zero-width space) is just as
+            # broken as the blank-required-frontmatter-value case
+            # `_is_blank()` was originally written for: `heading_text` comes
+            # out non-empty (the character survives untouched, same as
+            # every other invisible-Unicode case `_is_blank()` exists to
+            # catch), so a plain truthy check -- or no check at all, which
+            # is what this branch used to do -- lets it straight through to
+            # `render_inline()` and out as an `<h2>` that's present in the
+            # markup but carries no visible or accessible text at all.
+            # render_markdown("## ​\nSome text.") used to produce
+            # "<h2>​</h2>\n<p>Some text.</p>" -- a heading element with
+            # nothing a reader or a screen reader can perceive, sitting
+            # right above the paragraph it was supposed to introduce.
+            # Unlike a blank blockquote-continuation line (which is
+            # legitimately meant to be empty) there's no valid reason for a
+            # "## " heading to carry no visible text, so this fails the
+            # build the same way an unterminated code fence does just above
+            # -- loud and pointing at the offending file -- rather than
+            # silently shipping the empty element.
+            if _is_blank(heading_text):
+                raise ValueError(f"{source}: '## ' heading has no visible heading text")
+            out.append(f"<h2>{render_inline(heading_text)}</h2>")
             i += 1
             continue
         if line.startswith("> ") or (line.startswith(">") and _is_blank(line[1:])):
