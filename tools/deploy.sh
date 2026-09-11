@@ -969,14 +969,50 @@ SERVER_CHANGED=false
 # restarting; re-running the genuine-difference and genuinely-identical
 # cases through the same fixed logic still reach "changed" and "unchanged"
 # respectively, unaffected.
-DIFF_STDERR="$(mktemp)"
+#
+# But that stderr-means-ambiguous rule itself conflates a third, perfectly
+# legitimate case with the two genuine failures above: $LIVE_SERVER not
+# existing yet at all -- a real first deploy, the same scenario the
+# post-count guard (session 141, above) and the `mkdir -p "$LIVE_PUBLIC/
+# posts"` fix (session 153, above) already went out of their way to keep
+# working. `diff -q A B` against a missing B exits 2 (not 1) and writes
+# "diff: B: No such file or directory" to stderr -- nonzero exit, nonempty
+# stderr, exactly what the check above reads as "ambiguous, refuse" -- so a
+# genuine first deploy of server.js hit the FAILED branch immediately above
+# and aborted, even though nothing about sudo or the comparison was ever in
+# question: the file simply isn't there yet, which unambiguously means
+# "changed, deploy it," the same conclusion OLD_POST_COUNT's `sudo test -d`
+# check already reaches for the identical scenario one level up. Reproduced
+# directly: the exact diff/stderr-capture logic above, run against a
+# scratch $LIVE_SERVER that had never been created, printed the FAILED
+# "could not reliably compare" message and exited 1, despite `sudo -n true`
+# (checked earlier in this same script run) already having confirmed sudo
+# itself was completely healthy.
+#
+# Fixed by checking existence first, via the same `sudo test` shape already
+# used for OLD_POST_COUNT above and trusted for the identical reason: sudo's
+# own health was already confirmed once, earlier in this same run, so a
+# `sudo test -e` returning false here can be trusted as "genuinely missing,"
+# not "sudo refused." A missing $LIVE_SERVER short-circuits straight to
+# "changed" without ever running the ambiguous `diff`; when it does exist,
+# the diff-plus-stderr check above runs exactly as before, unchanged.
+# Re-running the identical missing-file repro with this fix in place
+# correctly took the "changed" branch instead of aborting; re-running the
+# genuine-difference, genuinely-identical, and sudo-denies-diff cases
+# through the same fixed logic still reached "changed", "unchanged", and
+# "FAILED: could not reliably compare" respectively, unaffected.
 diff_status=0
-sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
-DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
-rm -f "$DIFF_STDERR"
-if [ "$diff_status" -ne 0 ] && [ -n "$DIFF_STDERR_CONTENT" ]; then
-  echo "FAILED: could not reliably compare $BUILD_SRC/tools/server.js against $LIVE_SERVER (sudo diff -q exited $diff_status with unexpected stderr: $DIFF_STDERR_CONTENT) -- refusing to guess whether server.js changed, rather than risk either silently redeploying+restarting on every run or silently skipping a real change." >&2
-  exit 1
+if ! sudo test -e "$LIVE_SERVER"; then
+  diff_status=1
+else
+  DIFF_STDERR="$(mktemp)"
+  sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
+  DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
+  rm -f "$DIFF_STDERR"
+  if [ "$diff_status" -ne 0 ] && [ -n "$DIFF_STDERR_CONTENT" ]; then
+    echo "FAILED: could not reliably compare $BUILD_SRC/tools/server.js against $LIVE_SERVER (sudo diff -q exited $diff_status with unexpected stderr: $DIFF_STDERR_CONTENT) -- refusing to guess whether server.js changed, rather than risk either silently redeploying+restarting on every run or silently skipping a real change." >&2
+    exit 1
+  fi
 fi
 if [ "$diff_status" -ne 0 ]; then
   echo "== server.js changed, deploying =="
