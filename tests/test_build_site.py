@@ -328,6 +328,57 @@ class TestRenderMarkdown(unittest.TestCase):
         self.assertIn("posts/example.md", str(ctx.exception))
         self.assertIn("heading has no visible heading text", str(ctx.exception))
 
+    def test_blank_heading_raises_when_the_only_content_is_a_code_span_of_whitespace(self):
+        # A "## " heading whose only content is a code span isn't caught by
+        # plain _is_blank() at all -- the delimiting backticks are visible
+        # characters, so `_is_blank(heading_text)` reports "## ` `" (a code
+        # span wrapping a single ordinary space) as non-blank even though
+        # render_inline() turns it into "<code> </code>": a <code> element
+        # with nothing in it a reader or screen reader can perceive. This
+        # used to render render_markdown("## ` `\nSome text.") as
+        # "<h2><code> </code></h2>\n<p>Some text.</p>" instead of raising,
+        # the identical blank-heading failure the check just above exists to
+        # catch, just reached through a code span's delimiters standing in
+        # for the missing visible text.
+        body = "## ` `\nSome text."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("posts/example.md", str(ctx.exception))
+        self.assertIn("heading has no visible heading text", str(ctx.exception))
+
+    def test_blank_heading_raises_when_the_code_span_holds_only_invisible_unicode(self):
+        # Same gap as the whitespace-only code span above, reached through
+        # an invisible Unicode formatting character (the same class
+        # `_is_blank()` already treats as blank everywhere else) sitting
+        # inside the code span instead: render_markdown("## `​`\n...")
+        # used to produce "<h2><code>​</code></h2>" -- present in the
+        # markup, nothing perceivable in it.
+        body = "## `​`\nSome text."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("posts/example.md", str(ctx.exception))
+        self.assertIn("heading has no visible heading text", str(ctx.exception))
+
+    def test_heading_with_a_normal_code_span_does_not_raise(self):
+        # A code span with real, visible content is exactly as legitimate in
+        # a heading as anywhere else -- _is_blank_markdown() must not reject
+        # it just because it also has to resolve code spans to catch the
+        # blank-code-span case above.
+        self.assertEqual(
+            build_site.render_markdown("## `code`"), "<h2><code>code</code></h2>"
+        )
+
+    def test_heading_with_visible_text_and_a_blank_code_span_does_not_raise(self):
+        # A heading is only blank if *every* part of it is -- visible text
+        # sitting alongside a blank code span (e.g. a stray invisible
+        # character accidentally pasted in after real heading text) must
+        # still render normally, not be treated as if the whole heading
+        # were empty.
+        self.assertEqual(
+            build_site.render_markdown("## Real Heading `​`"),
+            "<h2>Real Heading <code>​</code></h2>",
+        )
+
     def test_fenced_code_block_not_inline_processed(self):
         body = "```\n*not italic* & <tag>\n```"
         self.assertEqual(

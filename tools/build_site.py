@@ -474,6 +474,46 @@ def _stash_code_spans(text):
     return "".join(out), code_spans
 
 
+_CODE_SPAN_PLACEHOLDER_RE = re.compile(r"\x00\d+\x00")
+
+
+def _is_blank_markdown(text):
+    """True if `text` -- raw markdown source, not rendered output -- has no
+    visible content once code spans are resolved the same way render_inline()
+    resolves them.
+
+    A code span's own delimiting backticks are visible characters, so
+    `_is_blank(text)` alone reports a heading like "## ` `" or "## `​`"
+    (a code span whose only content is an ordinary space or an invisible
+    Unicode character) as non-blank -- the backticks themselves are real,
+    visible text, and `_is_blank()` has no notion of markdown syntax at all.
+    But by the time render_inline() is done with it, those backticks become
+    a <code> tag wrapping content that is itself invisible, leaving a
+    heading that's present in the markup with no visible or accessible text
+    at all: render_markdown("## ` `\\n") used to produce
+    "<h2><code> </code></h2>", and render_markdown("## `​`\\n") (a
+    zero-width space inside the span) used to produce
+    "<h2><code>​</code></h2>" -- exactly the blank-heading failure mode
+    the `_is_blank(heading_text)` check below exists to catch, just reached
+    through a code span's delimiters standing in for the missing visible
+    text instead of an already-invisible character sailing through
+    untouched the way every other case that check was written for does.
+
+    Stashing code spans out the same way render_inline() does and then
+    checking each stashed span's own content the same way
+    `_has_invisible_boundary()` already does for bold/italic (an emphasis
+    match with an invisible boundary is left as literal, visible delimiter
+    characters instead of being wrapped -- see that function) closes the
+    gap: a heading is only blank if the text outside every code span is
+    blank *and* every code span's own content is blank too, matching what
+    the heading actually renders to instead of what its raw source happens
+    to contain.
+    """
+    stashed, code_spans = _stash_code_spans(text)
+    remainder = _CODE_SPAN_PLACEHOLDER_RE.sub("", stashed)
+    return _is_blank(remainder) and all(_is_blank(span) for span in code_spans)
+
+
 # Bold/italic matching, shared between render_inline() (HTML output) and
 # _summary() (plain-text feed/description output) so the two can't drift on
 # what counts as real emphasis markup vs. a literal "*" character -- session
@@ -731,7 +771,17 @@ def render_markdown(body, source="post"):
             # build the same way an unterminated code fence does just above
             # -- loud and pointing at the offending file -- rather than
             # silently shipping the empty element.
-            if _is_blank(heading_text):
+            #
+            # Plain `_is_blank()` only looks at the raw markdown source,
+            # though -- it has no notion of markdown syntax, so a code span
+            # whose own content is invisible (e.g. "## ` `" or "## `​`")
+            # reads as non-blank purely because its delimiting backticks are
+            # visible characters, even though render_inline() turns those
+            # backticks into a <code> tag wrapping nothing a reader can
+            # perceive. `_is_blank_markdown()` resolves code spans the same
+            # way render_inline() does before checking -- see its own
+            # docstring for the concrete repro.
+            if _is_blank_markdown(heading_text):
                 raise ValueError(f"{source}: '## ' heading has no visible heading text")
             out.append(f"<h2>{render_inline(heading_text)}</h2>")
             i += 1
