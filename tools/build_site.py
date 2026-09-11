@@ -826,7 +826,26 @@ def render_markdown(body, source="post"):
             # blockquote. Using `_is_blank()` here, the same test already
             # used for a whole blank line and for frontmatter values, closes
             # that gap the same way.
-            if not _is_blank(content):
+            #
+            # Plain `_is_blank()` only looks at the raw markdown source,
+            # though -- the same gap the "## " heading check above already
+            # had to close with `_is_blank_markdown()`. A "> " line whose
+            # only content is a code span wrapping nothing visible (e.g.
+            # "> ` `" or "> `​`") reads as non-blank to `_is_blank()`
+            # purely because its delimiting backticks are visible
+            # characters, even though render_inline() turns those backticks
+            # into a <code> tag wrapping nothing a reader can perceive.
+            # render_markdown("> Para one.\n> ` `\n> Para two.") used to
+            # splice a stray, visible "<code> </code>" into the middle of
+            # the quote -- "<blockquote><p>Para one. <code> </code> Para
+            # two.</p></blockquote>" -- instead of joining the two real
+            # lines directly, the identical blank-paragraph-separator
+            # failure the checks above already close, just reached through
+            # a code span's delimiters standing in for the missing visible
+            # text. `_is_blank_markdown()` resolves code spans the same way
+            # render_inline() does before checking, closing this gap the
+            # same way it already does for headings.
+            if not _is_blank_markdown(content):
                 quote.append(content)
             i += 1
             continue
@@ -928,8 +947,17 @@ def _summary(body):
             # an invisible Unicode formatting character is a blank paragraph
             # separator, not real content, so it must not be spliced into
             # the summary as literal (invisible) text (see the matching
-            # comment in render_markdown() for the concrete repro).
-            if not _is_blank(content):
+            # comment in render_markdown() for the concrete repro). Also
+            # mirrors render_markdown()'s follow-up fix for a "> " line
+            # whose only content is a code span wrapping nothing visible
+            # (e.g. "> ` `" or "> `​`") -- `_is_blank()` alone reads that
+            # as non-blank because the delimiting backticks are visible
+            # characters, even though it renders as nothing a reader can
+            # perceive; `_is_blank_markdown()` resolves code spans the same
+            # way render_inline() does before checking, keeping this in
+            # sync with render_markdown() on which quote lines actually
+            # carry visible content.
+            if not _is_blank_markdown(content):
                 paragraph.append(content)
             continue
         if paragraph and quoting:

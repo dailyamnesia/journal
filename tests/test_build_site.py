@@ -550,6 +550,41 @@ class TestRenderMarkdown(unittest.TestCase):
             "<blockquote><p>Para one. Para two.</p></blockquote>",
         )
 
+    def test_quote_line_hidden_behind_a_blank_code_span_is_treated_as_blank_not_content(self):
+        # Same gap as the invisible-Unicode-quote-line fix above, reached
+        # through a code span instead of a bare invisible character: a
+        # "> " line whose only content is a code span wrapping nothing
+        # visible (e.g. "` `", a single ordinary space) isn't blank to
+        # plain _is_blank() at all -- the delimiting backticks are visible
+        # characters -- so the content check here used to see one
+        # non-empty, "real" character and splice it into the quote as
+        # literal content instead of treating it as a blank paragraph
+        # separator like a bare ">" already is. render_markdown("> Para
+        # one.\n> ` `\n> Para two.") used to produce "<blockquote><p>Para
+        # one. <code> </code> Para two.</p></blockquote>" -- a stray,
+        # visible <code> element spliced into the middle of the quote --
+        # instead of joining the two real lines directly, exactly the
+        # blank-code-span gap `_is_blank_markdown()` already closed for
+        # "## " headings, just never carried to this sibling construct.
+        body = "> Para one.\n> ` `\n> Para two."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>Para one. Para two.</p></blockquote>",
+        )
+
+    def test_quote_line_hidden_behind_an_invisible_unicode_code_span_is_treated_as_blank_not_content(self):
+        # Same gap as above, reached through an invisible Unicode
+        # formatting character inside the code span instead of an ordinary
+        # space: render_markdown("> Para one.\n> `​`\n> Para two.") used
+        # to produce "<blockquote><p>Para one. <code>​</code> Para
+        # two.</p></blockquote>" -- a <code> element with nothing a reader
+        # or screen reader can perceive, spliced into the quote.
+        body = "> Para one.\n> `​`\n> Para two."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<blockquote><p>Para one. Para two.</p></blockquote>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -786,6 +821,23 @@ class TestSummary(unittest.TestCase):
         # that ends it -- see the matching test/comment in
         # TestRenderMarkdown for the concrete repro of the old behavior.
         body = "> Para one.\n>​\n> Para two."
+        self.assertEqual(build_site._summary(body), "Para one. Para two.")
+
+    def test_quote_line_hidden_behind_a_blank_code_span_is_treated_as_blank_not_content(self):
+        # _summary()'s sibling of render_markdown()'s equivalent fix: a
+        # "> " line whose only content is a code span wrapping nothing
+        # visible (e.g. "` `") used to splice that space into the summary
+        # as literal content instead of being treated as a blank paragraph
+        # separator -- see the matching test in TestRenderMarkdown for the
+        # concrete repro of the old behavior.
+        body = "> Para one.\n> ` `\n> Para two."
+        self.assertEqual(build_site._summary(body), "Para one. Para two.")
+
+    def test_quote_line_hidden_behind_an_invisible_unicode_code_span_is_treated_as_blank_not_content(self):
+        # Same gap as above, reached through an invisible Unicode
+        # formatting character inside the code span instead of an ordinary
+        # space -- see the matching test in TestRenderMarkdown.
+        body = "> Para one.\n> `​`\n> Para two."
         self.assertEqual(build_site._summary(body), "Para one. Para two.")
 
 
