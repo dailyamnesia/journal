@@ -161,8 +161,22 @@ function createRequestHandler(publicDir) {
       // body. Resolving and recheck-containing `real404` first, then
       // opening *that* (not `notFoundPath`) closes the same gap the same
       // way fix #8 did for the main path.
+      // isFdExhaustion() is checked at every step below for the same reason
+      // it's checked on the main file-serving path (fix #14): this runs the
+      // identical realpath-then-open-then-/proc/self/fd sequence, against a
+      // different path, but fs.realpath/fs.open don't care which path they
+      // were given when the fd table itself is full -- EMFILE/ENFILE here
+      // mean exactly the same "couldn't even check" thing they mean there.
+      // Before this, every one of these three error branches fell straight
+      // through to plainFallback() regardless of cause, so a transient fd
+      // shortage hitting *this* lookup (a separate fd-consuming operation
+      // from the main lookup above, and so not caught by that check) came
+      // back as an ordinary 404 instead of the 503 the rest of this file
+      // already uses to signal "can't tell right now," indistinguishable to
+      // the client from the page genuinely not existing.
       fs.realpath(notFoundPath, (realErr, real404) => {
         if (closed) return;
+        if (isFdExhaustion(realErr)) return serveUnavailable();
         if (realErr || (real404 !== realPublicDir && !real404.startsWith(realPublicDir + path.sep))) {
           return plainFallback();
         }
@@ -171,7 +185,10 @@ function createRequestHandler(publicDir) {
             if (!openErr) fs.close(fd, () => {});
             return;
           }
-          if (openErr) return plainFallback();
+          if (openErr) {
+            if (isFdExhaustion(openErr)) return serveUnavailable();
+            return plainFallback();
+          }
           // Same residual gap as the main file path below, and the same fix:
           // fs.realpath(notFoundPath, ...) above and this fs.open are two
           // separate async hops, so a symlink swap landing on `real404`'s own
@@ -187,6 +204,10 @@ function createRequestHandler(publicDir) {
           // closes the same gap the same way.
           fs.realpath(`/proc/self/fd/${fd}`, (fdErr, fdReal) => {
             if (closed) return fs.close(fd, () => {});
+            if (isFdExhaustion(fdErr)) {
+              fs.close(fd, () => {});
+              return serveUnavailable();
+            }
             if (fdErr || (fdReal !== realPublicDir && !fdReal.startsWith(realPublicDir + path.sep))) {
               fs.close(fd, () => {});
               return plainFallback();

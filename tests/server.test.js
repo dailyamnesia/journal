@@ -1143,6 +1143,58 @@ test('server: fs.open failing with EMFILE returns 503 for a real file, not a fal
   );
 });
 
+test('server: fs.realpath failing with EMFILE while opening 404.html returns 503, not a false 404', async (t) => {
+  // Regression test: d8cb7d1 (the previous test above) taught the *main*
+  // file lookup -- fs.realpath(filePath) and fs.open(real) -- to tell fd
+  // exhaustion (EMFILE/ENFILE) apart from a genuine miss and answer 503
+  // instead of a false 404. serveNotFound() runs the identical
+  // realpath-then-open-then-/proc/self/fd sequence against 404.html itself
+  // (to apply the same symlink-containment and TOCTOU checks to the error
+  // page as to any other file, per the fixes above), but its three error
+  // branches -- fs.realpath(notFoundPath), fs.open(real404), and
+  // fs.realpath(/proc/self/fd/<fd>) -- were never given the same
+  // isFdExhaustion() treatment: all three fall straight through to
+  // plainFallback(), an ordinary 404, regardless of *why* they failed.
+  //
+  // This is a separate gap from the already-fixed main-file check, not a
+  // duplicate of it: the two are two different fd-consuming operations,
+  // hitting the fd table at two different moments. Under exactly the kind
+  // of concurrent burst that exhausts the process's fd table (the scenario
+  // the previous test reproduces against a real, separate child process),
+  // the *first* check on a path that's genuinely missing can legitimately
+  // come back ENOENT (fd headroom recovered by the time it ran) while the
+  // *second* check, moments later, hits the fd table at a worse instant and
+  // gets EMFILE -- and today that second failure is silently swallowed into
+  // an ordinary 404 instead of the 503 the rest of this file already treats
+  // fd exhaustion as deserving.
+  //
+  // Reproduced deterministically here (no ulimit/concurrency race needed)
+  // by making fs.realpath fail with EMFILE specifically for the 404.html
+  // lookup, while leaving every other call -- including the initial
+  // realpath of the (genuinely missing) requested file -- untouched.
+  const dir = makePublicDir(t);
+  const notFoundPath = path.join(dir, '404.html');
+  const originalRealpath = fs.realpath;
+  fs.realpath = (p, cb) => {
+    if (p === notFoundPath) {
+      const err = new Error('EMFILE: too many open files, realpath');
+      err.code = 'EMFILE';
+      return process.nextTick(() => cb(err));
+    }
+    return originalRealpath(p, cb);
+  };
+  t.after(() => { fs.realpath = originalRealpath; });
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/this-genuinely-does-not-exist.html');
+    assert.equal(
+      res.status,
+      503,
+      `fd exhaustion while looking up 404.html must surface as 503, not a false 404 (got status ${res.status}, body ${JSON.stringify(res.body)})`
+    );
+  });
+});
+
 // installGracefulShutdown has to be exercised in a real, separate OS
 // process: it installs a handler for a real OS signal on `process`, which
 // can't be verified by sending a signal to this test's own process without
