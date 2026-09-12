@@ -233,6 +233,14 @@ fi
 # directories/worktrees this script owns for the rest of its run.
 BUILD_SRC="$(mktemp -d)"
 BUILD_DIR=""
+# Tracks whichever root-owned staged path (created via sudo, outside this
+# script's own unprivileged cleanup reach) is currently in flight -- set
+# right before that path is created, cleared right after it's safely
+# consumed (renamed into place or otherwise no longer needed). Declared here
+# (empty), not down at its one current use site (the server.js swap below),
+# so cleanup() can reference it unconditionally under `set -u` even on an
+# abort that happens before that use site is ever reached.
+LIVE_STAGE=""
 # A bare `trap 'rm -rf "$BUILD_DIR"' EXIT` doesn't wait for a still-running
 # foreground child (the `sudo rsync` below) before running: a TERM/INT
 # delivered directly to this script's own PID (not its whole process group —
@@ -304,6 +312,17 @@ cleanup() {
   wait 2>/dev/null || true
   git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
   rm -rf "$BUILD_DIR"
+  # $LIVE_STAGE (see the server.js swap below) is root-owned, created via
+  # sudo, and outside $BUILD_SRC/$BUILD_DIR entirely -- unlike every other
+  # temp path this cleanup already handles, nothing else ever removes it.
+  # Left set only while a staged path is genuinely in flight (cleared right
+  # after each use site consumes it), so this is a no-op on both a normal
+  # successful run and an abort that happens before the swap is ever
+  # reached; it only fires for a TERM/INT/HUP/QUIT/OOM landing between a
+  # staged path's creation and the moment it's renamed into place or
+  # otherwise no longer needed.
+  [ -n "$LIVE_STAGE" ] && sudo rm -f "$LIVE_STAGE" 2>/dev/null
+  true
 }
 trap cleanup EXIT
 git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"
@@ -1029,7 +1048,22 @@ if [ "$diff_status" -ne 0 ]; then
   # partial byte count matching neither the original nor the source.
   # Copying to a same-directory temp file and `mv`-ing it into place
   # mirrors what rsync already does and closes the same gap here.
-  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_SERVER.new"
+  #
+  # $LIVE_SERVER.new is itself root-owned and outside $BUILD_SRC/$BUILD_DIR,
+  # so nothing in cleanup() removed it if this script died between its
+  # creation and the `mv` below -- the exact same "TERM/OOM/disk-full mid-
+  # write" causes already covered above and throughout this file just leak
+  # this one instead of truncating it, forever, since no later deploy run
+  # ever looks for or removes a stale `.new` unless it happens to write a
+  # fresh one over the same fixed name. Reproduced directly: a scratch
+  # harness matching cleanup()'s real trap shape, sent TERM ~50ms into
+  # copying a 200MB file to a `.new` path outside its tracked temp dirs,
+  # left that root-owned partial file behind after cleanup ran to
+  # completion. Setting $LIVE_STAGE here, before the copy starts, lets
+  # cleanup() remove it on exactly that abort; re-running the identical
+  # repro with $LIVE_STAGE wired the same way here left nothing behind.
+  LIVE_STAGE="$LIVE_SERVER.new"
+  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_STAGE"
   # The same permission-drift shape already fixed twice for the content
   # sync (`chmod 755` on $BUILD_DIR and $BUILD_DIR/posts, since `mktemp -d`
   # and Python's default `mkdir` mode each land wherever the invoking
@@ -1065,9 +1099,10 @@ if [ "$diff_status" -ne 0 ]; then
   # fixes chmod their own directories right after creation: re-running the
   # identical umask-077 repro with this chmod in place left the live file
   # at 0644 regardless of the invoking shell's umask.
-  sudo chmod 644 "$LIVE_SERVER.new"
-  sudo chown webapp:webapp "$LIVE_SERVER.new"
-  sudo mv "$LIVE_SERVER.new" "$LIVE_SERVER"
+  sudo chmod 644 "$LIVE_STAGE"
+  sudo chown webapp:webapp "$LIVE_STAGE"
+  sudo mv "$LIVE_STAGE" "$LIVE_SERVER"
+  LIVE_STAGE=""
   SERVER_CHANGED=true
 fi
 
