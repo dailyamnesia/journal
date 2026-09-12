@@ -1153,7 +1153,26 @@ for path in / /feed.xml; do
   done
   if [ "$code" != "200" ]; then
     echo "FAILED: http://127.0.0.1:3000$path never returned 200 (last: $code)" >&2
-    systemctl status dailyamnesia-web.service --no-pager -l >&2 || true
+    # Same missing-timeout gap already fixed for the other three systemctl
+    # call sites in this script (`is-active` above, `restart` inside
+    # restart_service(), and `show -p MainPID` further down) -- systemctl
+    # talks to systemd over D-Bus, and a wedged systemd manager or
+    # stopped-responding D-Bus broker leaves this call blocked forever, the
+    # same way it would any of those three. This is a purely diagnostic,
+    # best-effort call (the `|| true` already shows that), reached exactly
+    # when the site has just failed to come up -- arguably the moment a
+    # wedged systemd/D-Bus manager is *most* plausible, not least -- so
+    # leaving it unwrapped wedges this deploy right here, still holding
+    # $LOCKFILE, before ever reaching $RECOVERY_HINT or `exit 1`, silently
+    # blocking every future deploy exactly like the three already-fixed
+    # call sites. Reproduced directly: a scratch copy of this exact
+    # verification block, with a stand-in `systemctl` that sleeps forever
+    # for `status` specifically and a stand-in `curl` that always reports
+    # connection failure, hung indefinitely on this line (confirmed via an
+    # external `timeout`, since the line itself had no protection). Wrapping
+    # it in `timeout 30`, the same bound already used for the sibling
+    # `is-active`/`show` diagnostic calls, closes it the same way.
+    timeout 30 systemctl status dailyamnesia-web.service --no-pager -l >&2 || true
     echo "$RECOVERY_HINT" >&2
     exit 1
   fi
