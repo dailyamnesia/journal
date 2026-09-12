@@ -237,7 +237,37 @@ def _is_invisible_char(ch):
     # three "real" characters, reaching <title>/<h1>/the index link
     # with no visible or accessible text at all, the same failure mode
     # as all five prior fixes.
-    return code == 0x034F or 0x180B <= code <= 0x180D or code == 0x180F or 0x17B4 <= code <= 0x17B5
+    if code == 0x034F or 0x180B <= code <= 0x180D or code == 0x180F or 0x17B4 <= code <= 0x17B5:
+        return True
+    # A seventh class: the C0 control range's own tail (e.g. U+007F
+    # DELETE) and the C1 control range (U+0080-U+009F) -- both category
+    # 'Cc', the same general category as the C0 control characters
+    # (U+0000-U+001F) that parse_post()'s required-key check already
+    # handles, but through a different mechanism than every check above:
+    # that check runs `_is_blank()` against the value *after*
+    # `_strip_invalid_xml_chars()` has already removed C0 controls (they're
+    # forbidden outright by XML 1.0), so a title made only of C0 controls
+    # is caught by arriving at that check already empty, not by
+    # `_is_blank()` itself recognizing 'Cc' as invisible. U+007F and the
+    # U+0080-U+009F range are just as much non-printable control
+    # characters -- neither has a glyph of its own, the identical
+    # "renders as nothing" trait as every class above -- but
+    # `_strip_invalid_xml_chars()` deliberately leaves them alone: unlike
+    # the C0 range, both are valid XML 1.0 characters (the Char
+    # production's `[#x20-#xD7FF]` range includes them), so stripping them
+    # would be removing well-formed content, not sanitizing malformed
+    # content. That left a gap the C0 case's indirect fix never covered: a
+    # title made entirely of these (e.g. `title: "\x91\x91\x91"`, three
+    # U+0091 PRIVATE USE ONE characters, or a "## \x7f\x7f\x7f" heading
+    # inside a post body) reaches `_is_blank()`/`_is_blank_markdown()` as
+    # three "real" characters -- not whitespace, not 'Cf', not any of the
+    # six classes above -- survives `_strip_invalid_xml_chars()` completely
+    # unchanged, and ships as a `<title>`/`<h1>`/`<h2>` that's present in
+    # the markup but carries no visible or accessible text at all, the
+    # same failure mode as all six prior fixes. Checking the general
+    # category directly, the same test already used for 'Cf' on the first
+    # line of this function, closes the gap for this class the same way.
+    return unicodedata.category(ch) == "Cc"
 
 
 def parse_post(path):

@@ -359,6 +359,27 @@ class TestRenderMarkdown(unittest.TestCase):
         self.assertIn("posts/example.md", str(ctx.exception))
         self.assertIn("heading has no visible heading text", str(ctx.exception))
 
+    def test_blank_heading_raises_when_the_only_content_is_a_del_or_c1_control_character(self):
+        # A "## " heading made entirely of U+007F DELETE or a U+0080-U+009F
+        # C1 control character (e.g. U+0091 PRIVATE USE ONE) is just as
+        # blank-looking as the whitespace-only and invisible-Unicode-only
+        # cases above, but used to slip past both _is_blank() and
+        # _strip_invalid_xml_chars(): a control character is category 'Cc',
+        # not 'Cf', so _is_blank() never treated it as invisible on its own
+        # merits (the C0 control range only got caught indirectly, via
+        # parse_post()'s required-key check running _is_blank() against an
+        # already-XML-sanitized value) -- and unlike the C0 range,
+        # _strip_invalid_xml_chars() deliberately leaves U+007F and
+        # U+0080-U+009F alone, since both are valid XML 1.0 characters, not
+        # malformed content to be dropped. render_markdown("## \x7f\x7f\x7f\n...")
+        # used to produce "<h2>\x7f\x7f\x7f</h2>" -- present in the markup,
+        # nothing a reader or screen reader can perceive.
+        body = "## \x7f\x7f\x7f\nSome text."
+        with self.assertRaises(ValueError) as ctx:
+            build_site.render_markdown(body, source="posts/example.md")
+        self.assertIn("posts/example.md", str(ctx.exception))
+        self.assertIn("heading has no visible heading text", str(ctx.exception))
+
     def test_heading_with_a_normal_code_span_does_not_raise(self):
         # A code span with real, visible content is exactly as legitimate in
         # a heading as anywhere else -- _is_blank_markdown() must not reject
@@ -966,6 +987,35 @@ class TestParsePost(unittest.TestCase):
             path.write_bytes(
                 b'---\ntitle: "\x01"\ndate: 2026-01-01\n---\n'
                 b"Body with a control-character title.\n"
+            )
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("title", str(ctx.exception))
+
+    def test_del_or_c1_control_character_only_title_names_the_file(self):
+        # A title made entirely of U+007F DELETE or a U+0080-U+009F C1
+        # control character (e.g. U+0091 PRIVATE USE ONE) is just as
+        # blank-looking as the C0-control-only case just above, but slips
+        # past the fix that closed that case: that fix runs _is_blank()
+        # against the value *after* _strip_invalid_xml_chars() has already
+        # removed C0 controls, so a C0-only title is caught by arriving
+        # already empty -- not by _is_blank() recognizing 'Cc' as invisible
+        # in its own right. U+007F and U+0080-U+009F are just as
+        # non-printable (category 'Cc', the identical general category as
+        # the C0 range), but _strip_invalid_xml_chars() deliberately leaves
+        # them alone: unlike C0, both are valid XML 1.0 characters, so
+        # stripping them would delete well-formed content rather than
+        # sanitize malformed content. A title made only of these survived
+        # every check untouched -- three "real" characters, no strip to
+        # empty it back out -- reaching <title>/<h1>/the index link as
+        # markup that's present but carries no visible or accessible text
+        # at all, the same failure mode as the C0 case just above.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "bad.md"
+            path.write_bytes(
+                '---\ntitle: "\x91\x91\x91"\ndate: 2026-01-01\n---\n'
+                'Body with a C1-control-character-only title.\n'.encode("utf-8")
             )
             with self.assertRaises(ValueError) as ctx:
                 build_site.parse_post(path)
