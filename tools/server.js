@@ -37,6 +37,36 @@ function resolveRequestPath(urlPath, publicDir) {
     return null;
   }
   if (relative.includes('\0')) return null;
+  // A request path ending in "/." or "/.." names a directory exactly as
+  // unambiguously as one ending in a literal "/" -- per the URL Standard's
+  // own dot-segment-removal algorithm (the same one every browser runs to
+  // resolve a page's relative links against its own address), all three
+  // forms resolve to an identical trailing-slash-terminated path: browsers
+  // treat "/posts/hello.html/." exactly like "/posts/hello.html/". Node's
+  // path.normalize()/path.join() below don't agree -- they collapse a
+  // trailing "/." away entirely, with nothing left over to mark that the
+  // request ever named a directory: "/posts/hello.html/." normalizes to the
+  // exact same string as plain "/posts/hello.html", indistinguishable from
+  // an ordinary file request by the time `hadTrailingSlash` (in the request
+  // handler below, computed from this function's own return value) ever
+  // gets to look at it. That's the identical "a trailing slash on a real
+  // file must 404, not serve the file with broken relative links" failure
+  // the hadTrailingSlash check already exists to prevent for a literal "/"
+  // -- just reopened for this RFC/URL-equivalent spelling, since a real
+  // browser resolves a page's own relative links against
+  // "/posts/hello.html/." as if it had been "/posts/hello.html/". Confirmed
+  // directly: requesting "/posts/hello.html/." against the unfixed code
+  // returned the file's contents with a 200, while
+  // `new URL("other-post.html", new URL("http://x/posts/hello.html/."))` --
+  // the identical resolution algorithm a browser runs against whatever a
+  // page's own address bar reads -- resolves to
+  // "/posts/hello.html/other-post.html", not the correct
+  // "/posts/other-post.html". Appending a separator here, before
+  // path.normalize ever runs, preserves the same signal a literal trailing
+  // "/" already carries through unmodified, so the existing
+  // hadTrailingSlash check downstream -- which already handles that case
+  // correctly -- catches this one too, with no other change needed.
+  if (relative.endsWith('/.') || relative.endsWith('/..')) relative += '/';
   let resolved = path.normalize(path.join(publicDir, relative));
   if (resolved !== publicDir && !resolved.startsWith(publicDir + path.sep)) return null;
   // The root rewrite has to run on the *normalized* path, not the raw

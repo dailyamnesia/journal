@@ -60,6 +60,22 @@ test('resolveRequestPath: "/./" also maps to index.html', (t) => {
   assert.equal(resolveRequestPath('/./', dir), path.join(dir, 'index.html'));
 });
 
+test('resolveRequestPath: a real file requested with a trailing "/." carries the same trailing-separator signal as a trailing "/"', (t) => {
+  // Regression test: per the URL Standard's own dot-segment-removal
+  // algorithm (what every browser uses to resolve a page's relative links),
+  // a request path ending in "/." names a directory exactly as unambiguously
+  // as one ending in a literal "/" -- both resolve to the identical
+  // trailing-slash-terminated path. But path.normalize()/path.join() (used
+  // below) disagree: they collapse a trailing "/." away entirely, with no
+  // trailing separator left over, so "/posts/hello.html/." used to come back
+  // byte-for-byte identical to plain "/posts/hello.html" -- indistinguishable
+  // from an ordinary file request by the time the request handler's
+  // hadTrailingSlash check (computed from this function's own return value)
+  // ever got to look at it.
+  const dir = makePublicDir(t);
+  assert.equal(resolveRequestPath('/posts/hello.html/.', dir), path.join(dir, 'posts', 'hello.html') + path.sep);
+});
+
 test('resolveRequestPath: strips query string', (t) => {
   const dir = makePublicDir(t);
   assert.equal(resolveRequestPath('/index.html?utm_source=x', dir), path.join(dir, 'index.html'));
@@ -631,6 +647,37 @@ test('server: a real file requested with a trailing slash gets a 404, not the fi
     const withoutSlash = await get(port, '/posts/hello.html');
     assert.equal(withoutSlash.status, 200);
     assert.match(withoutSlash.body, /hello/);
+  });
+});
+
+test('server: a real file requested with a trailing "/." gets a 404, not the file with broken relative links', async (t) => {
+  // Regression test, the same failure as the trailing-slash test above, just
+  // reached through an RFC/URL-equivalent spelling the fix for that bug never
+  // covered: per the URL Standard's dot-segment-removal algorithm (the same
+  // one every browser runs to resolve a page's own relative links), a
+  // request path ending in "/." names a directory exactly as unambiguously as
+  // one ending in a literal "/" -- both resolve to an identical
+  // trailing-slash-terminated path (confirmed directly:
+  // `new URL("other-post.html", new URL("http://x/posts/hello.html/."))`
+  // resolves to "/posts/hello.html/other-post.html", exactly like the
+  // plain-trailing-slash case, not the correct "/posts/other-post.html").
+  // But path.normalize()/path.join() collapse a trailing "/." away entirely,
+  // with no trailing separator left behind to mark that the request ever
+  // named a directory -- "/posts/hello.html/." used to normalize to the
+  // exact same string as plain "/posts/hello.html", so it sailed straight
+  // through as an ordinary, successful 200 file request instead of the 404
+  // a directory-shaped request must get.
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/posts/hello.html/.');
+    assert.equal(res.status, 404);
+    assert.match(res.body, /missing/);
+    // Requesting the same file without the trailing "/." must still work
+    // normally -- this is about the trailing dot-segment specifically, not
+    // about breaking ordinary file serving.
+    const withoutDot = await get(port, '/posts/hello.html');
+    assert.equal(withoutDot.status, 200);
+    assert.match(withoutDot.body, /hello/);
   });
 });
 
