@@ -720,6 +720,29 @@ lock_file_was_replaced() {
   local fds=("/proc/$SUPERVISOR_PPID/fd/"*)
   if [ ! -e "${fds[0]}" ]; then
     echo "FAILED: could not inspect this deploy's lock-holding supervisor (pid $SUPERVISOR_PPID)'s open file descriptors via /proc -- refusing to guess whether $LOCKFILE was deleted and replaced while this deploy was running." >&2
+    # `kill -TERM "$$"` before `exit 1`, not `exit 1` alone: this function is
+    # now called two ways (see watch_supervisor() below) -- once inline from
+    # the main script itself, where $$ is this process's own pid and a bare
+    # `exit 1` already ends the whole deploy correctly, but also once per
+    # second from inside watch_supervisor's own backgrounded subshell, where
+    # `$$` still correctly refers to the *main* script's pid (bash keeps `$$`
+    # pointing at the originating shell even inside a `&` background job --
+    # `$BASHPID` is the one that would differ) but `exit 1` on its own would
+    # only terminate that backgrounded subshell itself, not the main script.
+    # Left as plain `exit 1`, a can't-determine outcome hit from inside the
+    # watchdog would silently kill just the watchdog -- no FAILED message
+    # reaching the deploy's own exit code, no kill -TERM to abort the run,
+    # just a quietly-dead background job and an unprotected rest of the sync
+    # -- the exact "a real failure silently reads as if nothing were wrong"
+    # shape this file has already closed at every other call site, freshly
+    # reintroduced by wiring this function into a second, backgrounded call
+    # site without checking what its own `exit` actually reaches from there.
+    # Signaling the main script directly, the same way the rest of
+    # watch_supervisor already does on a detected problem, closes it for
+    # both call sites at once: harmless and redundant at the original inline
+    # site (which was already about to exit 1 on its own), and the only
+    # thing that actually aborts the deploy from the backgrounded site.
+    kill -TERM "$$" 2>/dev/null
     exit 1
   fi
   for fd in "${fds[@]}"; do
@@ -759,10 +782,49 @@ fi
 # never got signaled before this fix -- the child ran to completion every
 # time; with watch_supervisor running in the background, the child received
 # SIGTERM within a couple of seconds of the supervisor dying, every time.
+#
+# But the comment above only actually got half-fixed: this loop widened the
+# *supervisor-liveness* check (the one right above lock_file_was_replaced)
+# from one-shot to continuous, but lock_file_was_replaced() itself -- the
+# very next check, guarding the identical "the section below isn't
+# instantaneous" gap for a *different* way this lock can stop meaning
+# anything -- was left as the single, pre-sync call it already was, with
+# nothing re-running it for the rest of this section. An operator who does
+# the `rm -f "$LOCKFILE"` + recreate "clear the stale lock by hand" fix
+# lock_file_was_replaced() was written for (same persona this whole file
+# already assumes) can do it *after* this deploy's own pre-sync check has
+# already passed, any time before this deploy actually finishes -- the
+# lock-holding supervisor stays alive and keeps passing kill -0 the entire
+# time, so this loop's own liveness check never fires, while a second,
+# independent deploy.sh opens the freshly recreated path as a brand new
+# inode and acquires it immediately, running its own sync fully concurrently
+# with this one's still-in-progress sync. Reproduced directly: a scratch
+# copy of this exact self-reexec flock shape, with the pre-sync
+# lock_file_was_replaced() check passing normally and then the lock file
+# replaced (rm + recreate, supervisor left alive) four seconds into a
+# 20-second stand-in "sync" -- a second, independent invocation acquired the
+# recreated path's lock immediately and ran its own complete 3-second
+# "sync" (start to finish) entirely inside the first invocation's still-
+# running 20-second window, while the first ran to completion with no
+# FAILED message and no indication anything had gone wrong: two lock
+# holders genuinely overlapping in wall-clock time, exactly what the lock
+# exists to prevent. Folding lock_file_was_replaced() into this same
+# per-second loop -- not a second, separate background loop, since both
+# checks guard the identical window and both need the identical
+# TERM-triggers-cleanup response -- closes it the same way the liveness
+# check already was closed: re-running the identical mid-sync-swap
+# reproduction with this version aborted the first invocation within a
+# couple of seconds of the swap instead of letting it run to completion
+# unaware.
 watch_supervisor() {
   while sleep 1; do
     if ! kill -0 "$SUPERVISOR_PPID" 2>/dev/null; then
       echo "FAILED: this deploy's lock-holding supervisor (pid $SUPERVISOR_PPID) died mid-deploy -- the lock it held may already be released, so a second deploy could already be running concurrently; aborting the rest of this one." >&2
+      kill -TERM "$$" 2>/dev/null
+      return
+    fi
+    if lock_file_was_replaced; then
+      echo "FAILED: this deploy's lock file ($LOCKFILE) was deleted and replaced while this deploy was running -- it no longer protects against a concurrent deploy; aborting the rest of this one." >&2
       kill -TERM "$$" 2>/dev/null
       return
     fi
