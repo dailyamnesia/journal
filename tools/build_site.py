@@ -739,8 +739,35 @@ def render_markdown(body, source="post"):
             paragraph.clear()
 
     def flush_quote():
+        # Each accumulated line already passed `_is_blank_markdown()`
+        # individually (see the "> " branch below) before being appended
+        # here -- but that per-line check only ever looks at one line's own
+        # backticks, while this function joins every line with a single
+        # space and resolves code spans (and bold/italic) across the
+        # *joined* result, the same way flush_paragraph() does. A code
+        # span's opening and closing backticks don't have to sit on the
+        # same quote line: two lines each holding a single, unpaired "`"
+        # (e.g. "> `" followed by "> `") are each individually non-blank on
+        # their own -- an unmatched backtick is just a literal, visible
+        # character -- so both survive the per-line filter and land here.
+        # Once joined into "` `", though, those two backticks pair up into
+        # a single code span whose content is nothing but the space between
+        # them, and render_inline() turns that into "<code> </code>": a
+        # <blockquote> that's present in the markup but carries no visible
+        # or accessible text at all, the identical failure mode every other
+        # `_is_blank_markdown()` check in this file exists to prevent, just
+        # reached through a code span split across two lines instead of
+        # sitting inside one. render_markdown("> `\\n> `\\n") used to
+        # produce "<blockquote><p><code> </code></p></blockquote>".
+        # Checking the fully joined text here -- the same text
+        # render_inline() is about to render -- and discarding the whole
+        # quote if it comes out blank (rather than emitting an empty
+        # <blockquote>) matches how a quote made entirely of blank lines
+        # already produces no element at all.
         if quote:
-            out.append(f"<blockquote><p>{render_inline(' '.join(quote))}</p></blockquote>")
+            joined = " ".join(quote)
+            if not _is_blank_markdown(joined):
+                out.append(f"<blockquote><p>{render_inline(joined)}</p></blockquote>")
             quote.clear()
 
     while i < len(lines):
@@ -918,15 +945,41 @@ def _entry_timestamp(post):
 def _summary(body):
     """Plain-text first paragraph of a post, for the feed entry summary."""
     paragraph = []
-    quoting = False
+    quote = []
     in_code = False
     fence_marker = None
+
+    def flush_quote():
+        # Mirrors render_markdown()'s own flush_quote() fix: an accumulated
+        # quote line is buffered here rather than written straight into
+        # `paragraph`, because whether the quote carries any visible text
+        # can only be judged once every line is joined with a single space
+        # and code spans are resolved across that *joined* result -- two
+        # lines each holding one unpaired "`" (e.g. "> `" then "> `") are
+        # each individually non-blank on their own (an unmatched backtick
+        # is just a literal character), so both survive the per-line
+        # `_is_blank_markdown()` filter below, but joining them produces
+        # "` `", a single code span whose only content is the space between
+        # them -- blank, the same way render_inline() turns it into
+        # "<code> </code>" on the rendered page. A quote that turns out
+        # blank this way contributes nothing to the summary, exactly like
+        # the leading heading/fence cases elsewhere in this loop: `paragraph`
+        # stays empty and the loop keeps looking for the real first
+        # paragraph, instead of the summary silently becoming whitespace
+        # where that paragraph's actual text belongs.
+        if quote:
+            joined = " ".join(quote)
+            if not _is_blank_markdown(joined):
+                paragraph.append(joined)
+            quote.clear()
+
     for line in body.split("\n"):
         if not in_code and line.startswith("```"):
             # render_markdown() flushes the current paragraph/quote before a
             # fence starts, same as a blank line does; a fence with nothing
             # accumulated yet (before the real first paragraph) is skipped,
             # same as a leading heading is below.
+            flush_quote()
             if paragraph:
                 break
             in_code = True
@@ -951,10 +1004,12 @@ def _summary(body):
             # ""` untouched, so it used to fail to end the leading
             # paragraph here too -- see the matching comment in
             # render_markdown() for the concrete repro.
+            flush_quote()
             if paragraph:
                 break
             continue
         if line.startswith("## "):
+            flush_quote()
             if paragraph:
                 break
             continue
@@ -968,10 +1023,14 @@ def _summary(body):
             # only by an invisible Unicode formatting character -- checking
             # `_is_blank()` on everything after the ">" instead of relying
             # on `str.rstrip()` (which only trims ordinary whitespace)
-            # catches that case here too.
-            if paragraph and not quoting:
+            # catches that case here too. `paragraph` (not `quote`, which
+            # only ever holds the *current*, not-yet-flushed quote) is the
+            # right thing to check here: it's empty for as long as this
+            # quote is still being accumulated, so a run of consecutive
+            # quote lines never breaks here, only a quote that starts after
+            # a different, already-committed block does.
+            if paragraph:
                 break
-            quoting = True
             content = line[2:].strip() if line.startswith("> ") else ""
             # Mirrors render_markdown()'s own fix: a "> " line holding only
             # an invisible Unicode formatting character is a blank paragraph
@@ -988,12 +1047,14 @@ def _summary(body):
             # sync with render_markdown() on which quote lines actually
             # carry visible content.
             if not _is_blank_markdown(content):
-                paragraph.append(content)
+                quote.append(content)
             continue
-        if paragraph and quoting:
-            break
-        quoting = False
+        if quote:
+            flush_quote()
+            if paragraph:
+                break
         paragraph.append(line.strip())
+    flush_quote()
     # Reuses render_inline()'s own code-span stashing and bold/italic
     # regexes (see the comment above _BOLD_RE) instead of the blind
     # `re.sub(r"[`*]", "", ...)` this used to be -- that stripped *every*

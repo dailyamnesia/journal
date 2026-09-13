@@ -606,6 +606,38 @@ class TestRenderMarkdown(unittest.TestCase):
             "<blockquote><p>Para one. Para two.</p></blockquote>",
         )
 
+    def test_code_span_split_across_two_quote_lines_leaves_no_blank_blockquote(self):
+        # Every case above checks a code span that's blank *within a single*
+        # "> " line -- `_is_blank_markdown()` there resolves that line's own
+        # backticks before judging blankness. But flush_quote() joins every
+        # accumulated quote line with a single space before code spans are
+        # ever resolved (the same way flush_paragraph() joins a multi-line
+        # paragraph), so a code span's opening and closing backticks don't
+        # have to sit on the same line at all: "> `" followed by "> `" is
+        # two lines each holding one *unmatched* backtick -- individually
+        # non-blank to the per-line check, since an unmatched backtick with
+        # no pair is just a literal, visible character -- but once joined
+        # into "` `" those two backticks pair up into a single code span
+        # whose content is nothing but the space between them. This used to
+        # produce "<blockquote><p><code> </code></p></blockquote>": a
+        # <blockquote> present in the markup with no visible or accessible
+        # text at all, the identical failure mode every other
+        # `_is_blank_markdown()` check in this file exists to prevent, just
+        # reached through a code span split across two quote lines instead
+        # of contained within one.
+        body = "> `\n> `"
+        self.assertEqual(build_site.render_markdown(body), "")
+
+    def test_code_span_split_across_two_quote_lines_does_not_swallow_a_later_paragraph(self):
+        # Same gap as above; a blank blockquote is discarded entirely (see
+        # the matching comment in flush_quote()), so real content after it
+        # still renders normally instead of being lost along with it.
+        body = "> `\n> `\n\nReal paragraph."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Real paragraph.</p>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -860,6 +892,31 @@ class TestSummary(unittest.TestCase):
         # space -- see the matching test in TestRenderMarkdown.
         body = "> Para one.\n> `​`\n> Para two."
         self.assertEqual(build_site._summary(body), "Para one. Para two.")
+
+    def test_code_span_split_across_two_quote_lines_is_not_summarized_as_whitespace(self):
+        # _summary()'s sibling of render_markdown()'s equivalent fix (see
+        # test_code_span_split_across_two_quote_lines_leaves_no_blank_blockquote
+        # in TestRenderMarkdown for the full repro): "> `" followed by "> `"
+        # are each individually non-blank on their own -- an unmatched
+        # backtick is just a literal character -- but pair up into one
+        # blank code span once joined with a space, the same way
+        # render_markdown()'s flush_quote() joins them before resolving
+        # code spans. This used to make _summary() return " " (the lone
+        # space between the two backticks) as the post's <meta
+        # name="description"> and feed <summary> -- present, but carrying
+        # no visible text at all, exactly like a post with nothing to
+        # summarize should instead just get "".
+        body = "> `\n> `"
+        self.assertEqual(build_site._summary(body), "")
+
+    def test_code_span_split_across_two_quote_lines_does_not_swallow_a_later_paragraph(self):
+        # Same gap as above; a blank quote is discarded and scanning
+        # continues, so the real paragraph after it becomes the summary
+        # instead of being lost along with the blank quote -- matching
+        # render_markdown(), which likewise renders the real paragraph
+        # once the blank blockquote is discarded.
+        body = "> `\n> `\n\nReal paragraph."
+        self.assertEqual(build_site._summary(body), "Real paragraph.")
 
 
 class TestParsePost(unittest.TestCase):
