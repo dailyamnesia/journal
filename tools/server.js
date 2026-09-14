@@ -89,6 +89,21 @@ function createRequestHandler(publicDir) {
   const realPublicDir = fs.realpathSync(publicDir);
 
   return (req, res) => {
+    // This is a static file server: GET is the only method that ever makes
+    // sense against it, and HEAD is GET-minus-body (Node's http module
+    // already drops the body of a stream piped to a HEAD response on its
+    // own, so nothing below needs to special-case it). Without this check,
+    // every other method -- POST, PUT, DELETE, OPTIONS, TRACE -- fell
+    // through to the identical file-serving logic as GET, silently
+    // returning 200 and the target file's full contents regardless of what
+    // the client's method meant. Rejected here, before any path resolution
+    // or filesystem access, with the 405 + Allow combination RFC 9110
+    // requires for a method a resource doesn't support.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, { 'Allow': 'GET, HEAD', 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('method not allowed');
+    }
+
     const filePath = resolveRequestPath(req.url, publicDir);
     if (!filePath) {
       res.writeHead(400);

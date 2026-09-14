@@ -207,6 +207,58 @@ test('server: unknown path serves 404.html with a 404 status', async (t) => {
   });
 });
 
+function request(port, method, urlPath) {
+  return new Promise((resolve, reject) => {
+    http.request({ host: '127.0.0.1', port, method, path: urlPath }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        allow: res.headers['allow'],
+        body: Buffer.concat(chunks).toString(),
+      }));
+    }).on('error', reject).end();
+  });
+}
+
+test('server: a POST request gets 405 with an Allow header, not the file body', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await request(port, 'POST', '/index.html');
+    assert.equal(res.status, 405);
+    assert.equal(res.allow, 'GET, HEAD');
+    assert.doesNotMatch(res.body, /home/);
+  });
+});
+
+test('server: PUT, DELETE, OPTIONS, TRACE, and PATCH all get 405 instead of serving the file', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    for (const method of ['PUT', 'DELETE', 'OPTIONS', 'TRACE', 'PATCH']) {
+      const res = await request(port, method, '/index.html');
+      assert.equal(res.status, 405, `${method} should be rejected with 405`);
+      assert.equal(res.allow, 'GET, HEAD', `${method} should report the Allow header`);
+    }
+  });
+});
+
+test('server: a rejected method 405s before path resolution runs, even against a malformed path', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await request(port, 'POST', '/%E0%A4%A');
+    assert.equal(res.status, 405);
+  });
+});
+
+test('server: HEAD still returns 200 with an empty body', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await request(port, 'HEAD', '/index.html');
+    assert.equal(res.status, 200);
+    assert.equal(res.body, '');
+  });
+});
+
 test('server: a symlinked 404.html pointing outside publicDir does not leak its target', async (t) => {
   // Regression test: every other file this handler ever opens -- the
   // requested file itself -- goes through fs.realpath and a containment
