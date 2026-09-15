@@ -60,6 +60,12 @@ EOF
 chmod +x "$WORK/bin/sudo"
 export PATH="$WORK/bin:$PATH"
 
+# The extracted block now wraps its sudo calls in `timeout "$SYNC_TIMEOUT_S"`
+# (the fix for the separate sudo-hang bug covered by
+# test_deploy_sudo_hang.sh) -- set here the same way the real deploy.sh
+# sets it from $DEPLOY_SH_SYNC_TIMEOUT_S before this block ever runs.
+SYNC_TIMEOUT_S=60
+
 BUILD_SRC="$WORK/build_src"
 mkdir -p "$BUILD_SRC/tools"
 echo "console.log('new server');" > "$BUILD_SRC/tools/server.js"

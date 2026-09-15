@@ -42,11 +42,20 @@ if [ -z "$CLEANUP_SRC" ]; then
 fi
 
 SET_LIVE_STAGE="$(get_line '  LIVE_STAGE="$LIVE_SERVER.new"')"
-CP_LINE="$(get_line '  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_STAGE"')"
-CHMOD_LINE="$(get_line '  sudo chmod 644 "$LIVE_STAGE"')"
-CHOWN_LINE="$(get_line '  sudo chown webapp:webapp "$LIVE_STAGE"')"
-MV_LINE="$(get_line '  sudo mv "$LIVE_STAGE" "$LIVE_SERVER"')"
+CP_LINE="$(get_line '  run_synced sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_STAGE"')"
+CHMOD_LINE="$(get_line '  run_synced sudo chmod 644 "$LIVE_STAGE"')"
+CHOWN_LINE="$(get_line '  run_synced sudo chown webapp:webapp "$LIVE_STAGE"')"
+MV_LINE="$(get_line '  run_synced sudo mv "$LIVE_STAGE" "$LIVE_SERVER"')"
 CLEAR_LIVE_STAGE="$(get_line '  LIVE_STAGE=""')"
+# All four lines above now route through run_synced() (the sudo-hang fix
+# covered by test_deploy_sudo_hang.sh), so this test's generated scripts
+# need that function and its timeout var defined too.
+RUN_SYNCED_SRC="$(awk '/^run_synced\(\) \{/,/^}/' "$DEPLOY_SH")"
+if [ -z "$RUN_SYNCED_SRC" ]; then
+  echo "FAIL: could not find run_synced() in $DEPLOY_SH -- has it been renamed or removed?" >&2
+  exit 1
+fi
+SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
 
 WORK="$(mktemp -d)"
 cleanup_work() { rm -rf "$WORK"; }
@@ -88,6 +97,8 @@ BUILD_SRC="$WORK/build_src"
 BUILD_DIR="$WORK/build_dir_unused"
 LIVE_SERVER="$WORK/live/server.js"
 LIVE_STAGE=""
+$SYNC_TIMEOUT_LINE
+$RUN_SYNCED_SRC
 $CLEANUP_SRC
 trap cleanup EXIT
 EOF

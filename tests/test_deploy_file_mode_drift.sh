@@ -41,10 +41,20 @@ get_line() {
 CHMOD_BUILD_DIR="$(get_line 'chmod 755 "$BUILD_DIR"')"
 CHMOD_POSTS="$(get_line 'chmod 755 "$BUILD_DIR/posts"')"
 FIND_CHMOD_FILES="$(get_line 'find "$BUILD_DIR" -type f -exec chmod 644 {} +')"
-RSYNC1="$(get_line 'sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
-RSYNC2="$(get_line 'sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
-RSYNC3="$(get_line "sudo rsync -a --delete-delay --exclude='/posts/' \"\$BUILD_DIR/\" \"\$LIVE_PUBLIC/\"")"
-RSYNC4="$(get_line 'sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
+RSYNC1="$(get_line 'run_synced sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
+RSYNC2="$(get_line 'run_synced sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
+RSYNC3="$(get_line "run_synced sudo rsync -a --delete-delay --exclude='/posts/' \"\$BUILD_DIR/\" \"\$LIVE_PUBLIC/\"")"
+RSYNC4="$(get_line 'run_synced sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
+# Both call sites now route through run_synced() (the sudo-hang fix covered
+# by test_deploy_sudo_hang.sh), so this test needs that function and its
+# timeout var defined too, extracted the same verbatim way as everything
+# else here.
+RUN_SYNCED_SRC="$(awk '/^run_synced\(\) \{/,/^}/' "$DEPLOY_SH")"
+if [ -z "$RUN_SYNCED_SRC" ]; then
+  echo "FAIL: could not find run_synced() in $DEPLOY_SH -- has it been renamed or removed?" >&2
+  exit 1
+fi
+SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
 
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
@@ -76,6 +86,8 @@ export PATH="$WORK/bin:$PATH"
   echo "<html>post</html>" > "$BUILD_DIR/posts/hello-world.html"
 )
 
+eval "$SYNC_TIMEOUT_LINE"
+eval "$RUN_SYNCED_SRC"
 eval "$CHMOD_BUILD_DIR"
 eval "$CHMOD_POSTS"
 eval "$FIND_CHMOD_FILES"

@@ -832,6 +832,33 @@ watch_supervisor() {
 }
 watch_supervisor &
 
+# Every sudo call in the sync/server.js-swap section below (the same one
+# the comment above this already calls out as "not one instantaneous
+# statement") shares the hang risk already fixed for systemctl in
+# restart_service(): an expired sudo credential with a controlling TTY
+# attached (an operator running this by hand -- the persona this file
+# already assumes throughout) blocks on a password prompt nobody is
+# watching to answer, instead of failing outright the way a no-TTY sudo
+# would. `sudo -n true`, far above, only confirms sudo's health at that one
+# instant, before either test suite has even started running -- a
+# credential that was fine then can expire before this section, tens of
+# seconds later, ever runs. Wrapping each call here in `timeout`, the same
+# guard already applied to git fetch/both test suites/systemctl elsewhere
+# in this file, makes a stuck prompt fail loudly within $SYNC_TIMEOUT_S
+# instead of hanging forever, still holding $LOCKFILE. Reproduced directly:
+# a scratch stand-in `sudo` that answers `-n` instantly but blocks on any
+# other invocation (modeling exactly this) hung the real, unmodified `sudo
+# mkdir -p "$LIVE_PUBLIC/posts"` line indefinitely before this fix, and
+# failed within the timeout after it. 60s is generous headroom for local
+# filesystem operations against a few hundred small files.
+SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"
+run_synced() {
+  if ! timeout "$SYNC_TIMEOUT_S" "$@"; then
+    echo "FAILED: '$*' did not finish within ${SYNC_TIMEOUT_S}s (or failed) -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+    exit 1
+  fi
+}
+
 echo "== syncing content to $LIVE_PUBLIC =="
 # The post-count guard above deliberately treats "$LIVE_PUBLIC/posts doesn't
 # exist" as a legitimate, expected state on a genuine first-ever deploy
@@ -854,7 +881,7 @@ echo "== syncing content to $LIVE_PUBLIC =="
 # `mkdir -p "$LIVE_PUBLIC/posts"` first (harmless and a no-op on every
 # non-first deploy, since the directories already exist by then) let the
 # identical repro complete all three passes successfully.
-sudo mkdir -p "$LIVE_PUBLIC/posts"
+run_synced sudo mkdir -p "$LIVE_PUBLIC/posts"
 
 # --delete-delay, not plain --delete: plain --delete defaults to
 # delete-during, which removes each now-extraneous destination file as
@@ -943,11 +970,11 @@ sudo mkdir -p "$LIVE_PUBLIC/posts"
 # live in the sub-pass before it). Re-running the identical repro through
 # both sub-passes in order found no point where a live page linked to a
 # not-yet-existing one.
-sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
-sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
-sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
-sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
-sudo chown -R webapp:webapp "$LIVE_PUBLIC"
+run_synced sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
+run_synced sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
+run_synced sudo rsync -a --delete-delay --exclude='/posts/' "$BUILD_DIR/" "$LIVE_PUBLIC/"
+run_synced sudo rsync -a --delete-delay "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"
+run_synced sudo chown -R webapp:webapp "$LIVE_PUBLIC"
 
 # This hint is shown for two structurally different failures: the restart
 # command itself failing (e.g. systemd's default start-limit-hit after
@@ -1083,13 +1110,34 @@ SERVER_CHANGED=false
 # through the same fixed logic still reached "changed", "unchanged", and
 # "FAILED: could not reliably compare" respectively, unaffected.
 diff_status=0
-if ! sudo test -e "$LIVE_SERVER"; then
+test_status=0
+# Not routed through run_synced above: its own "genuinely missing" (exit
+# 1) and "genuinely differs" (diff's own exit 1) outcomes are meaningful
+# results this block already depends on, not failures -- run_synced's
+# blanket "any nonzero means FAILED" would misread a real first deploy
+# (server.js not live yet) as a hang. `timeout`'s own exit 124 is checked
+# for explicitly instead, the one outcome that's unambiguously a hang.
+timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" || test_status=$?
+if [ "$test_status" -eq 124 ]; then
+  echo "FAILED: 'sudo test -e $LIVE_SERVER' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+elif [ "$test_status" -ne 0 ]; then
   diff_status=1
 else
   DIFF_STDERR="$(mktemp)"
-  sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
+  timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
   DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
   rm -f "$DIFF_STDERR"
+  # A hang here (timeout's own exit 124) leaves $DIFF_STDERR_CONTENT empty
+  # -- nothing sudo/diff wrote counts as "unexpected stderr" -- so the
+  # ambiguous-comparison check just below would otherwise miss it and fall
+  # through to "changed", the wrong read for a comparison that never
+  # actually ran. Checked explicitly, before that check, for the same
+  # reason the test_status case above is.
+  if [ "$diff_status" -eq 124 ]; then
+    echo "FAILED: 'sudo diff -q $BUILD_SRC/tools/server.js $LIVE_SERVER' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+    exit 1
+  fi
   if [ "$diff_status" -ne 0 ] && [ -n "$DIFF_STDERR_CONTENT" ]; then
     echo "FAILED: could not reliably compare $BUILD_SRC/tools/server.js against $LIVE_SERVER (sudo diff -q exited $diff_status with unexpected stderr: $DIFF_STDERR_CONTENT) -- refusing to guess whether server.js changed, rather than risk either silently redeploying+restarting on every run or silently skipping a real change." >&2
     exit 1
@@ -1125,7 +1173,7 @@ if [ "$diff_status" -ne 0 ]; then
   # cleanup() remove it on exactly that abort; re-running the identical
   # repro with $LIVE_STAGE wired the same way here left nothing behind.
   LIVE_STAGE="$LIVE_SERVER.new"
-  sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_STAGE"
+  run_synced sudo cp "$BUILD_SRC/tools/server.js" "$LIVE_STAGE"
   # The same permission-drift shape already fixed twice for the content
   # sync (`chmod 755` on $BUILD_DIR and $BUILD_DIR/posts, since `mktemp -d`
   # and Python's default `mkdir` mode each land wherever the invoking
@@ -1161,9 +1209,9 @@ if [ "$diff_status" -ne 0 ]; then
   # fixes chmod their own directories right after creation: re-running the
   # identical umask-077 repro with this chmod in place left the live file
   # at 0644 regardless of the invoking shell's umask.
-  sudo chmod 644 "$LIVE_STAGE"
-  sudo chown webapp:webapp "$LIVE_STAGE"
-  sudo mv "$LIVE_STAGE" "$LIVE_SERVER"
+  run_synced sudo chmod 644 "$LIVE_STAGE"
+  run_synced sudo chown webapp:webapp "$LIVE_STAGE"
+  run_synced sudo mv "$LIVE_STAGE" "$LIVE_SERVER"
   LIVE_STAGE=""
   SERVER_CHANGED=true
 fi
