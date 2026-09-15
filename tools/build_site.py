@@ -734,24 +734,9 @@ def render_markdown(body, source="post"):
     quote = []
 
     def flush_paragraph():
-        # Mirrors flush_quote() just below: a paragraph line whose only
-        # content is a code span wrapping nothing visible (e.g. "` `", a
-        # single ordinary space, or a zero-width space inside the
-        # backticks) isn't blank to plain `_is_blank(line)` at all -- the
-        # delimiting backticks are visible characters -- so such a line
-        # used to sail past the blank-line paragraph-break check below and
-        # get appended to `paragraph` like any other real line. Once
-        # flushed here it rendered as a real <p> element -- e.g.
-        # render_markdown("Real text.\n\n` `\n\nMore text.") used to
-        # produce "<p>Real text.</p>\n<p><code> </code></p>\n<p>More
-        # text.</p>" -- a paragraph present in the markup with no visible
-        # or accessible text at all, sitting between two real ones, the
-        # identical failure mode `_is_blank_markdown()` already exists to
-        # prevent for headings and blockquotes, just never carried to this
-        # sibling construct: plain body text. Checking the joined text the
-        # same way flush_quote() does, and discarding the whole paragraph
-        # if it comes out blank, matches how a paragraph made entirely of
-        # genuinely blank lines already produces no element at all.
+        # A code span wrapping nothing visible (e.g. "` `") isn't blank to
+        # `_is_blank(line)` -- the backticks are visible -- so check the
+        # joined, rendered text instead, same as flush_quote() below.
         if paragraph:
             joined = " ".join(paragraph)
             if not _is_blank_markdown(joined):
@@ -994,23 +979,8 @@ def _summary(body):
             quote.clear()
 
     def paragraph_has_content():
-        # `paragraph` accumulates candidate "first paragraph" lines, but a
-        # line whose only content is a code span wrapping nothing visible
-        # (e.g. "` `") isn't blank to plain `_is_blank(line)` -- the
-        # delimiting backticks are visible characters -- so it used to be
-        # appended here like any other real line, and every "if paragraph:
-        # break" below (there to stop scanning once the real first
-        # paragraph is found) fired on it just the same as on genuine text.
-        # That let a paragraph consisting only of such a code span -- e.g.
-        # body = "` `\n\nReal text." -- permanently win the "first
-        # paragraph" slot: _summary() returned " " (a single space, all
-        # that's left once the blank code span is restored) instead of
-        # "Real text.", the post's actual first visible paragraph.
-        # render_markdown()'s own flush_paragraph() resolves the identical
-        # gap by checking the *joined* text with `_is_blank_markdown()` --
-        # the same check flush_quote() above already uses -- before
-        # deciding a paragraph is real; this mirrors that so the two
-        # renderers stay in sync on which paragraph is actually "first".
+        # Mirrors render_markdown()'s flush_paragraph(): a blank-only code
+        # span (e.g. "` `") must not win the "first paragraph" slot.
         return bool(paragraph) and not _is_blank_markdown(" ".join(paragraph))
 
     for line in body.split("\n"):
