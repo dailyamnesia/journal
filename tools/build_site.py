@@ -734,8 +734,28 @@ def render_markdown(body, source="post"):
     quote = []
 
     def flush_paragraph():
+        # Mirrors flush_quote() just below: a paragraph line whose only
+        # content is a code span wrapping nothing visible (e.g. "` `", a
+        # single ordinary space, or a zero-width space inside the
+        # backticks) isn't blank to plain `_is_blank(line)` at all -- the
+        # delimiting backticks are visible characters -- so such a line
+        # used to sail past the blank-line paragraph-break check below and
+        # get appended to `paragraph` like any other real line. Once
+        # flushed here it rendered as a real <p> element -- e.g.
+        # render_markdown("Real text.\n\n` `\n\nMore text.") used to
+        # produce "<p>Real text.</p>\n<p><code> </code></p>\n<p>More
+        # text.</p>" -- a paragraph present in the markup with no visible
+        # or accessible text at all, sitting between two real ones, the
+        # identical failure mode `_is_blank_markdown()` already exists to
+        # prevent for headings and blockquotes, just never carried to this
+        # sibling construct: plain body text. Checking the joined text the
+        # same way flush_quote() does, and discarding the whole paragraph
+        # if it comes out blank, matches how a paragraph made entirely of
+        # genuinely blank lines already produces no element at all.
         if paragraph:
-            out.append(f"<p>{render_inline(' '.join(paragraph))}</p>")
+            joined = " ".join(paragraph)
+            if not _is_blank_markdown(joined):
+                out.append(f"<p>{render_inline(joined)}</p>")
             paragraph.clear()
 
     def flush_quote():
@@ -973,6 +993,26 @@ def _summary(body):
                 paragraph.append(joined)
             quote.clear()
 
+    def paragraph_has_content():
+        # `paragraph` accumulates candidate "first paragraph" lines, but a
+        # line whose only content is a code span wrapping nothing visible
+        # (e.g. "` `") isn't blank to plain `_is_blank(line)` -- the
+        # delimiting backticks are visible characters -- so it used to be
+        # appended here like any other real line, and every "if paragraph:
+        # break" below (there to stop scanning once the real first
+        # paragraph is found) fired on it just the same as on genuine text.
+        # That let a paragraph consisting only of such a code span -- e.g.
+        # body = "` `\n\nReal text." -- permanently win the "first
+        # paragraph" slot: _summary() returned " " (a single space, all
+        # that's left once the blank code span is restored) instead of
+        # "Real text.", the post's actual first visible paragraph.
+        # render_markdown()'s own flush_paragraph() resolves the identical
+        # gap by checking the *joined* text with `_is_blank_markdown()` --
+        # the same check flush_quote() above already uses -- before
+        # deciding a paragraph is real; this mirrors that so the two
+        # renderers stay in sync on which paragraph is actually "first".
+        return bool(paragraph) and not _is_blank_markdown(" ".join(paragraph))
+
     for line in body.split("\n"):
         if not in_code and line.startswith("```"):
             # render_markdown() flushes the current paragraph/quote before a
@@ -980,8 +1020,9 @@ def _summary(body):
             # accumulated yet (before the real first paragraph) is skipped,
             # same as a leading heading is below.
             flush_quote()
-            if paragraph:
+            if paragraph_has_content():
                 break
+            paragraph.clear()
             in_code = True
             fence_marker = _fence_marker(line)
             continue
@@ -1005,13 +1046,15 @@ def _summary(body):
             # paragraph here too -- see the matching comment in
             # render_markdown() for the concrete repro.
             flush_quote()
-            if paragraph:
+            if paragraph_has_content():
                 break
+            paragraph.clear()
             continue
         if line.startswith("## "):
             flush_quote()
-            if paragraph:
+            if paragraph_has_content():
                 break
+            paragraph.clear()
             continue
         if line.startswith("> ") or (line.startswith(">") and _is_blank(line[1:])):
             # Mirrors render_markdown()'s own fix: a bare ">" is a blank
@@ -1029,8 +1072,9 @@ def _summary(body):
             # quote is still being accumulated, so a run of consecutive
             # quote lines never breaks here, only a quote that starts after
             # a different, already-committed block does.
-            if paragraph:
+            if paragraph_has_content():
                 break
+            paragraph.clear()
             content = line[2:].strip() if line.startswith("> ") else ""
             # Mirrors render_markdown()'s own fix: a "> " line holding only
             # an invisible Unicode formatting character is a blank paragraph
@@ -1051,8 +1095,9 @@ def _summary(body):
             continue
         if quote:
             flush_quote()
-            if paragraph:
+            if paragraph_has_content():
                 break
+            paragraph.clear()
         paragraph.append(line.strip())
     flush_quote()
     # Reuses render_inline()'s own code-span stashing and bold/italic

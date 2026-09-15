@@ -638,6 +638,47 @@ class TestRenderMarkdown(unittest.TestCase):
             "<p>Real paragraph.</p>",
         )
 
+    def test_paragraph_that_is_only_a_blank_code_span_is_discarded(self):
+        # Same gap `_is_blank_markdown()` already closed for headings and
+        # blockquotes (see test_blank_heading_raises_when_the_only_content_
+        # is_a_code_span_of_whitespace and
+        # test_quote_line_hidden_behind_a_blank_code_span_is_treated_as_
+        # blank_not_content above), never carried to plain body paragraphs:
+        # a line whose only content is a code span wrapping nothing visible
+        # (e.g. "` `", a single ordinary space) isn't blank to plain
+        # `_is_blank(line)` -- the delimiting backticks are visible
+        # characters -- so it used to sail past the blank-line
+        # paragraph-break check and get flushed as a real <p>.
+        # render_markdown("Some real content.\n\n` `\n\nMore content.") used
+        # to produce "<p>Some real content.</p>\n<p><code>
+        # </code></p>\n<p>More content.</p>" -- a paragraph present in the
+        # markup with no visible or accessible text at all, sandwiched
+        # between two real ones -- instead of being discarded like a
+        # paragraph made entirely of genuinely blank lines already is.
+        body = "Some real content.\n\n` `\n\nMore content."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Some real content.</p>\n<p>More content.</p>",
+        )
+
+    def test_paragraph_that_is_only_an_invisible_unicode_code_span_is_discarded(self):
+        # Same gap as above, reached through an invisible Unicode
+        # formatting character inside the code span instead of an ordinary
+        # space.
+        body = "Some real content.\n\n`​`\n\nMore content."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Some real content.</p>\n<p>More content.</p>",
+        )
+
+    def test_leading_paragraph_that_is_only_a_blank_code_span_does_not_hide_real_content(self):
+        # Same gap as above, at the very start of the body where there's no
+        # earlier real paragraph to compare against: a leading "` `"-only
+        # paragraph must not render as a stray blank <p> above the post's
+        # actual first paragraph.
+        body = "` `\n\nReal text."
+        self.assertEqual(build_site.render_markdown(body), "<p>Real text.</p>")
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -917,6 +958,38 @@ class TestSummary(unittest.TestCase):
         # once the blank blockquote is discarded.
         body = "> `\n> `\n\nReal paragraph."
         self.assertEqual(build_site._summary(body), "Real paragraph.")
+
+    def test_paragraph_that_is_only_a_blank_code_span_is_skipped(self):
+        # Sibling of test_paragraph_that_is_only_a_blank_code_span_is_
+        # discarded in TestRenderMarkdown: a line whose only content is a
+        # code span wrapping nothing visible (e.g. "` `") used to still get
+        # appended to `paragraph` here (the delimiting backticks are
+        # visible to plain `_is_blank(line)`), and every "if paragraph:
+        # break" in this loop -- there to stop scanning once the real first
+        # paragraph is found -- fired on it just like on genuine text. A
+        # leading "` `"-only paragraph therefore permanently won the "first
+        # paragraph" slot: _summary("` `\n\nReal text.") used to return " "
+        # (a lone space) instead of "Real text.", the post's actual first
+        # visible paragraph -- drifting from render_markdown(), which
+        # renders "Real text." as the post's only paragraph once the blank
+        # one is discarded.
+        body = "` `\n\nReal text."
+        self.assertEqual(build_site._summary(body), "Real text.")
+
+    def test_paragraph_that_is_only_an_invisible_unicode_code_span_is_skipped(self):
+        # Same gap as above, reached through an invisible Unicode
+        # formatting character inside the code span instead of an ordinary
+        # space.
+        body = "`​`\n\nReal text."
+        self.assertEqual(build_site._summary(body), "Real text.")
+
+    def test_mid_body_paragraph_that_is_only_a_blank_code_span_does_not_win_over_the_real_first_paragraph(self):
+        # Same gap as above, with the blank-code-span paragraph *after* the
+        # real first paragraph instead of before it: this must not change
+        # which paragraph is picked at all, matching render_markdown()'s
+        # own behavior of discarding the blank paragraph wherever it sits.
+        body = "Some real content.\n\n` `\n\nMore content."
+        self.assertEqual(build_site._summary(body), "Some real content.")
 
 
 class TestParsePost(unittest.TestCase):
