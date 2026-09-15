@@ -113,12 +113,25 @@ def page(title, body_html, extra_head=FEED_LINK, description=None):
 """
 
 
+_first_commit_time_cache = {}
+
+
 def _first_commit_time(path):
     """ISO timestamp of the post file's first commit, for ordering same-date posts.
 
     Falls back to a sentinel that sorts after every real timestamp, so an
     uncommitted (just-written) post still lands first, newest-first.
+
+    A full `--follow` history walk per post gets expensive as the repo's
+    post count and commit history grow (each call re-walks the whole
+    history looking for renames), so results are memoized for the life of
+    this process -- safe because a given (REPO_ROOT, path) pair's git
+    history doesn't change mid-process, the only way this function's
+    result could legitimately differ between two calls.
     """
+    cache_key = (REPO_ROOT, path)
+    if cache_key in _first_commit_time_cache:
+        return _first_commit_time_cache[cache_key]
     try:
         result = subprocess.run(
             # -M100% keeps --follow able to track a genuine rename (a plain
@@ -136,9 +149,11 @@ def _first_commit_time(path):
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         )
         lines = result.stdout.strip().splitlines()
-        return lines[-1] if lines else UNCOMMITTED_SENTINEL
+        value = lines[-1] if lines else UNCOMMITTED_SENTINEL
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return UNCOMMITTED_SENTINEL
+        value = UNCOMMITTED_SENTINEL
+    _first_commit_time_cache[cache_key] = value
+    return value
 
 
 def _is_blank(value):
