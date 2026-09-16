@@ -321,7 +321,38 @@ cleanup() {
   # reached; it only fires for a TERM/INT/HUP/QUIT/OOM landing between a
   # staged path's creation and the moment it's renamed into place or
   # otherwise no longer needed.
-  [ -n "$LIVE_STAGE" ] && sudo rm -f "$LIVE_STAGE" 2>/dev/null
+  #
+  # This plain `sudo rm -f` had no timeout of its own -- the one remaining
+  # sudo call site in the whole sync section that wasn't wrapped by
+  # run_synced() or its own hand-rolled timeout (see the comment above
+  # run_synced() for the full expired-credential/no-answered-TTY-prompt
+  # threat model this whole file already treats as real). Reaching this
+  # exact line means the swap was genuinely interrupted mid-flight -- e.g.
+  # `run_synced sudo cp ...` itself hit its own $SYNC_TIMEOUT_S timeout
+  # because sudo's credential expired mid-deploy, which is precisely the
+  # condition that leaves it still broken by the time cleanup() runs a
+  # moment later. A `sudo` that blocks on a password prompt here hangs
+  # forever, exactly like every other now-fixed hang in this file -- except
+  # worse: cleanup()'s own first line above already ran
+  # `trap '' TERM INT HUP QUIT`, so unlike an ordinary hang elsewhere in the
+  # script, an operator's plain Ctrl-C/`kill`/dropped-SSH-HUP can't even
+  # stop it once it's wedged here; only SIGKILL can. The process sits there
+  # still holding $LOCKFILE, silently blocking every future deploy
+  # ("another deploy.sh is already running") with no FAILED message and no
+  # other symptom. Reproduced directly: a scratch harness matching this
+  # exact trap-cleanup shape, with a stand-in `sudo` that blocks forever
+  # (modeling an expired credential with a TTY attached) and $LIVE_STAGE set
+  # as if a mid-swap TERM had just landed, hung this exact line indefinitely
+  # -- confirmed unkillable via an ordinary SIGTERM, only stopped by an
+  # external SIGKILL. Wrapping it in `timeout "$SYNC_TIMEOUT_S"`, the same
+  # bound already used for every other sudo call in this section, bounds
+  # the hang instead of leaving it open-ended; `|| true` keeps this
+  # best-effort cleanup step from aborting the rest of cleanup() under
+  # `set -e` if the timeout fires or the removal otherwise fails, the same
+  # way a missing $LIVE_STAGE already made this whole line a no-op. Re-
+  # running the identical repro with this fix in place returned within the
+  # timeout bound instead of hanging.
+  [ -n "$LIVE_STAGE" ] && { timeout "$SYNC_TIMEOUT_S" sudo rm -f "$LIVE_STAGE" 2>/dev/null || true; }
   true
 }
 trap cleanup EXIT
