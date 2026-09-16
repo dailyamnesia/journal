@@ -741,6 +741,42 @@ def _fence_marker(line):
     return m.group() if m else None
 
 
+def _is_fence_close(line, marker):
+    """True if `line` is the line that closes a fence opened with `marker`
+    (the exact backtick run returned by `_fence_marker()`).
+
+    render_markdown() and _summary() both used to compare with
+    `line.rstrip() == marker` (or `!=`) directly -- but `str.rstrip()`, like
+    `str.isspace()` elsewhere in this file, only trims ordinary *whitespace*
+    from the right, not an invisible-but-not-whitespace Unicode formatting
+    character (e.g. U+200B ZERO WIDTH SPACE) sitting in that same trailing
+    spot -- the same gap `_is_blank()` exists to close for a blank line, a
+    bare ">" blockquote continuation, and a heading's own text (see each of
+    their comments for the concrete history). A closing fence line with such
+    a character immediately after its backticks (very plausible: this file's
+    own comments repeatedly cite "a zero-width space left behind by a
+    paste" as the real-world source) survived `.rstrip()` with the invisible
+    character still attached, so `lines[i].rstrip() != marker` came out
+    true -- the fence was never recognized as closed at all. In
+    render_markdown() that meant every line all the way to the end of the
+    post -- including the post's real remaining paragraphs -- was swallowed
+    as code content, and the missing close then raised "unterminated code
+    fence", crashing the *entire* site build over what looks, to any human
+    reading the post, like an already-closed fence. In _summary() the same
+    comparison failure meant `in_code` never flipped back to False, so the
+    scan silently ran out of lines still "inside" the fence -- discarding
+    every real paragraph after it and shipping an empty description/feed
+    summary instead of raising anything. Checking `_is_blank()` on whatever
+    follows the marker -- the same test already used for every sibling case
+    above -- accepts trailing invisible characters (and ordinary whitespace,
+    subsuming the old `.rstrip()` behavior) while still rejecting a line
+    with real trailing content (e.g. a language tag, or a longer/shorter
+    backtick run), exactly like every other close-detection rule in this
+    file already does.
+    """
+    return line.startswith(marker) and _is_blank(line[len(marker):])
+
+
 def render_markdown(body, source="post"):
     lines = body.split("\n")
     out = []
@@ -815,8 +851,12 @@ def render_markdown(body, source="post"):
             # that was meant to be the inner block's own close. Matching by
             # marker length (not a hardcoded "```") closes the same gap for
             # a 4-or-more-backtick opener wrapping literal ``` content --
-            # see _fence_marker()'s own docstring.
-            while i < len(lines) and lines[i].rstrip() != marker:
+            # see _fence_marker()'s own docstring. A plain `.rstrip()`
+            # comparison here also missed a trailing invisible Unicode
+            # character right after the marker -- see _is_fence_close()'s
+            # own docstring for why that's not just a hypothetical and what
+            # it broke.
+            while i < len(lines) and not _is_fence_close(lines[i], marker):
                 code_lines.append(lines[i])
                 i += 1
             if i >= len(lines):
@@ -1019,8 +1059,10 @@ def _summary(body):
             # must not prematurely end it), and not a shorter bare "```"
             # inside a longer opener used to nest one -- see the matching
             # comment and _fence_marker()'s own docstring in render_markdown()
-            # for the concrete repro.
-            if line.rstrip() == fence_marker:
+            # for the concrete repro. Also mirrors render_markdown()'s own
+            # fix for a trailing invisible Unicode character right after the
+            # marker -- see _is_fence_close()'s own docstring.
+            if _is_fence_close(line, fence_marker):
                 in_code = False
             continue
         if _is_blank(line):

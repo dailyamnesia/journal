@@ -488,6 +488,23 @@ class TestRenderMarkdown(unittest.TestCase):
             "<p>Final paragraph.</p>",
         )
 
+    def test_closing_fence_with_trailing_invisible_character_still_closes(self):
+        # A closing "```" line immediately followed by an invisible Unicode
+        # formatting character (e.g. a zero-width space left behind by a
+        # paste -- the same real-world source this file's other invisible-
+        # character fixes cite) used to compare with a plain `.rstrip()`,
+        # which only trims ordinary whitespace, not this. The fence was
+        # never recognized as closed, so every remaining line -- including
+        # this post's real trailing paragraph -- was swallowed as code
+        # content, and the missing close then raised "unterminated code
+        # fence", crashing the whole build over what looks, to any human
+        # reading the post, like an already-closed fence.
+        body = "```\ncode line\n```​\nAfter."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<pre><code>code line</code></pre>\n<p>After.</p>",
+        )
+
     def test_blockquote(self):
         self.assertEqual(
             build_site.render_markdown("> quoted line"),
@@ -699,6 +716,17 @@ class TestSummary(unittest.TestCase):
 
     def test_skips_leading_heading_and_code_fence(self):
         body = "## Heading\n\n```\ncode\n```\n\nActual first paragraph."
+        self.assertEqual(build_site._summary(body), "Actual first paragraph.")
+
+    def test_closing_fence_with_trailing_invisible_character_still_closes(self):
+        # Mirrors render_markdown()'s own fix: a closing "```" line
+        # immediately followed by an invisible Unicode formatting character
+        # (e.g. a zero-width space) used to compare with a plain
+        # `.rstrip()`, which doesn't strip it, so `in_code` never flipped
+        # back to False -- the scan ran out of lines still "inside" the
+        # leading fence, discarding the real first paragraph after it and
+        # summarizing to "" instead of reaching it.
+        body = "```\ncode\n```​\n\nActual first paragraph."
         self.assertEqual(build_site._summary(body), "Actual first paragraph.")
 
     def test_content_line_starting_with_backticks_does_not_end_the_leading_fence_early(self):
