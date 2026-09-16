@@ -106,7 +106,10 @@ function createRequestHandler(publicDir) {
 
     const filePath = resolveRequestPath(req.url, publicDir);
     if (!filePath) {
-      res.writeHead(400);
+      // Every other response here (200, 404, 405, 503) sets an explicit
+      // Content-Type; this fixed literal body never reflected request input
+      // and had been missing one since the 400 path was first added.
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('bad request');
     }
 

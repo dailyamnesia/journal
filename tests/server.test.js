@@ -301,6 +301,15 @@ test('server: traversal attempt gets a 400, not a file', async (t) => {
   });
 });
 
+test('server: a 400 response carries an explicit Content-Type', async (t) => {
+  const dir = makePublicDir(t);
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/..%2f..%2f..%2fetc%2fpasswd');
+    assert.equal(res.status, 400);
+    assert.equal(res.contentType, 'text/plain; charset=utf-8');
+  });
+});
+
 test('server: malformed percent-encoding gets a 400, not a crash', async (t) => {
   const dir = makePublicDir(t);
   await withServer(dir, async (port) => {
