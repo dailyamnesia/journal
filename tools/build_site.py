@@ -1085,6 +1085,26 @@ def _summary(body):
             paragraph.clear()
         paragraph.append(line.strip())
     flush_quote()
+    # Every other place this loop can end up with a blank-code-span-only
+    # `paragraph` (a genuinely blank line, a heading, a fence, or a new
+    # quote starting) runs it through `paragraph_has_content()` first and
+    # clears it if that comes back False -- see the "if paragraph_has_
+    # content(): break" checks above -- so the blank paragraph is discarded
+    # and scanning continues rather than winning the "first paragraph"
+    # slot. But running out of lines (the body's *last* block is itself a
+    # blank-code-span-only paragraph, with nothing after it to trigger any
+    # of those checks) reached this point with no equivalent check at all,
+    # so `paragraph` sailed through with its blank content intact instead
+    # of being cleared like every other blank paragraph is.
+    # _summary("` `") used to return " " (a lone space) -- present in the
+    # feed <summary> and the post's <meta name="description">, but with no
+    # visible or accessible text at all -- instead of "", matching
+    # render_markdown("` `") discarding the identical paragraph outright
+    # (see test_paragraph_that_is_only_a_blank_code_span_is_discarded) and
+    # matching what a post with no leading paragraph at all already
+    # legitimately summarizes to.
+    if not paragraph_has_content():
+        paragraph.clear()
     # Reuses render_inline()'s own code-span stashing and bold/italic
     # regexes (see the comment above _BOLD_RE) instead of the blind
     # `re.sub(r"[`*]", "", ...)` this used to be -- that stripped *every*

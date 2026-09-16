@@ -991,6 +991,28 @@ class TestSummary(unittest.TestCase):
         body = "Some real content.\n\n` `\n\nMore content."
         self.assertEqual(build_site._summary(body), "Some real content.")
 
+    def test_body_that_is_only_a_blank_code_span_summarizes_to_empty(self):
+        # Same gap as the two tests above, reached when the blank-code-span
+        # paragraph is the *entire* body rather than one block among
+        # several: every other case above ends with a genuine blank line,
+        # heading, fence, or quote after the blank paragraph, which routes
+        # through `paragraph_has_content()` and discards it. Running out of
+        # lines with nothing after it skipped that check entirely, so
+        # `paragraph` kept its blank content and _summary("` `") returned
+        # " " (a lone space) instead of "", drifting from
+        # render_markdown("` `"), which discards the identical paragraph
+        # outright (see
+        # test_paragraph_that_is_only_a_blank_code_span_is_discarded) and
+        # from what a post with no leading paragraph at all already
+        # legitimately summarizes to.
+        self.assertEqual(build_site._summary("` `"), "")
+
+    def test_body_that_is_only_an_invisible_unicode_code_span_summarizes_to_empty(self):
+        # Same gap as above, reached through an invisible Unicode
+        # formatting character inside the code span instead of an ordinary
+        # space.
+        self.assertEqual(build_site._summary("`​`"), "")
+
 
 class TestParsePost(unittest.TestCase):
     def test_parses_frontmatter_and_body(self):
