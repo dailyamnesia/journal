@@ -445,6 +445,48 @@ test('server: a symlink does not let its own extension override the Content-Type
   });
 });
 
+test('server: a 404.html symlink does not let its fixed ".html" name override the Content-Type of its target', async (t) => {
+  // Regression test: the fix directly above closed this gap for the *main*
+  // file-serving path by keying Content-Type off `fdReal` -- the fd-verified
+  // real path of whatever is actually about to be streamed -- instead of the
+  // requested name. serveNotFound() runs the identical realpath-then-open-
+  // then-/proc/self/fd-then-fstat sequence against 404.html (including its
+  // own containment recheck, per the "symlinked 404.html" test above), and
+  // even computes `fdReal` for that exact purpose, but its Content-Type is a
+  // fixed literal -- `res.writeHead(404, { 'Content-Type': 'text/html; ...'
+  // })` -- that never consults `fdReal` at all, unlike the main path just
+  // above it.
+  //
+  // "Fixed name" only means the *name* 404.html is fixed, not what's on disk
+  // at that name: if publicDir/404.html is a symlink to some other plain
+  // file also inside publicDir (passing the containment check the same way
+  // "evil.html" -> "notes.txt" does above), that file's bytes get served
+  // with Content-Type: text/html regardless of what the file actually is --
+  // the exact same "any file whose contents aren't attacker-locked-down
+  // becomes a stored-XSS payload" failure the fix above exists to prevent
+  // for the main path, just reopened for the one path that runs on *every*
+  // request for *any* nonexistent URL, no attacker-guessed filename needed.
+  // Confirmed directly: a symlink "404.html" -> "notes.txt" (containing
+  // "<script>alert(document.domain)</script>") served that script as
+  // text/html to a request for a path that plainly doesn't exist.
+  const dir = makePublicDir(t);
+  const payload = '<script>alert(document.domain)</script>';
+  fs.writeFileSync(path.join(dir, 'notes.txt'), payload);
+  fs.rmSync(path.join(dir, '404.html'));
+  fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, '404.html'));
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/this-does-not-exist');
+    assert.equal(res.status, 404);
+    assert.equal(res.body, payload);
+    assert.equal(
+      res.contentType,
+      'application/octet-stream',
+      `expected 404.html's symlink target (a .txt file) to determine Content-Type, not the fixed "404.html" name, got ${res.contentType}`
+    );
+  });
+});
+
 test('server: a symlink swapped mid-request cannot bypass the realpath containment check', async (t) => {
   // Regression test: the realpath-containment check above resolves and
   // verifies `real`, but the stream that actually gets sent to the client

@@ -277,7 +277,31 @@ function createRequestHandler(publicDir) {
                 fs.close(fd, () => {});
                 return plainFallback();
               }
-              res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+              // Content-Type is picked from `fdReal` -- the fd-verified real
+              // path resolved just above -- not a fixed 'text/html' literal,
+              // for the identical reason the main file-serving path below
+              // keys off `fdReal` instead of the request name (fix above,
+              // "a symlink does not let its own extension override the
+              // Content-Type of its target"): "404.html" being a fixed,
+              // non-user-controlled *name* only pins down the name, not what
+              // that name actually points to on disk. A symlink at
+              // publicDir/404.html targeting some other plain file also
+              // inside publicDir (passing the containment checks above the
+              // same way any other in-bounds symlink does) used to have its
+              // target's bytes served with a hardcoded Content-Type:
+              // text/html regardless of what that file actually was --
+              // turning any such file into a stored-XSS payload on the one
+              // path that runs on *every* request for *any* nonexistent URL.
+              // Confirmed directly: a symlink "404.html" -> "notes.txt"
+              // containing "<script>alert(document.domain)</script>" served
+              // that script as text/html to a request for a plainly
+              // nonexistent path. Falling back to CONTENT_TYPES[ext] the same
+              // way the main path does -- 'text/html; charset=utf-8' for the
+              // ordinary case where 404.html really is an .html file,
+              // 'application/octet-stream' otherwise -- closes the same gap
+              // the same way.
+              const notFoundExt = path.extname(fdReal);
+              res.writeHead(404, { 'Content-Type': CONTENT_TYPES[notFoundExt] || 'application/octet-stream' });
               stream = fs.createReadStream(null, { fd });
               if (closed) return stream.destroy();
               stream.on('error', () => res.destroy());
