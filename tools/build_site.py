@@ -867,7 +867,21 @@ def render_markdown(body, source="post"):
         if line.startswith("## "):
             flush_paragraph()
             flush_quote()
-            heading_text = line[3:]
+            # An ordinary paragraph line is stored via
+            # `paragraph.append(line.strip())` and a blockquote
+            # continuation's own content via `line[2:].strip()` -- both
+            # trim surrounding whitespace before it reaches the page. This
+            # branch used to skip that step entirely (`line[3:]` with no
+            # `.strip()`), so padding around a heading's real text --
+            # trailing spaces left by an editor, or extra spaces right after
+            # the "## " marker itself -- survived untouched and shipped
+            # straight into the <h2> element instead of being cleaned up the
+            # same way the identical padding on a paragraph or blockquote
+            # line one line away already is.
+            # render_markdown("## Heading   \nBody.") used to produce
+            # "<h2>Heading   </h2>\n<p>Body.</p>" (trailing spaces baked
+            # into the markup).
+            heading_text = line[3:].strip()
             # A "## " line whose only content is an invisible Unicode
             # formatting character (e.g. a zero-width space) is just as
             # broken as the blank-required-frontmatter-value case

@@ -400,6 +400,30 @@ class TestRenderMarkdown(unittest.TestCase):
             "<h2>Real Heading <code>​</code></h2>",
         )
 
+    def test_heading_trailing_and_leading_whitespace_is_trimmed(self):
+        # A "## " heading's ordinary-paragraph siblings both trim surrounding
+        # whitespace before it ever reaches the page: an ordinary paragraph
+        # line is stored via `paragraph.append(line.strip())`, and a
+        # blockquote continuation's own content via `line[2:].strip()`. The
+        # heading branch instead does `heading_text = line[3:]` with no
+        # `.strip()` at all, so any padding around a heading's real text --
+        # trailing spaces left by an editor, or extra spaces right after the
+        # "## " marker -- survives untouched and ships straight into the
+        # <h2> element, unlike the identical padding on a paragraph or
+        # blockquote line one line away, which is already cleaned up.
+        # render_markdown("## Heading   \nBody.") used to produce
+        # "<h2>Heading   </h2>\n<p>Body.</p>" (three trailing spaces baked
+        # into the markup) instead of a heading trimmed the same way every
+        # sibling block already is.
+        self.assertEqual(
+            build_site.render_markdown("## Heading   \nBody text."),
+            "<h2>Heading</h2>\n<p>Body text.</p>",
+        )
+        self.assertEqual(
+            build_site.render_markdown("##   Heading with leading pad\nBody."),
+            "<h2>Heading with leading pad</h2>\n<p>Body.</p>",
+        )
+
     def test_fenced_code_block_not_inline_processed(self):
         body = "```\n*not italic* & <tag>\n```"
         self.assertEqual(
