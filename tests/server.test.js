@@ -293,6 +293,30 @@ test('server: a symlinked 404.html pointing outside publicDir does not leak its 
   });
 });
 
+test('server: the plain-text 404 fallback (used when 404.html itself is unusable) reports text/plain, not text/html', async (t) => {
+  // Regression test: plainFallback() -- reached from serveNotFound() when
+  // 404.html itself is missing, escapes publicDir, or otherwise fails to
+  // open -- always writes the plain-text literal "not found" as its body,
+  // but declared "Content-Type: text/html; charset=utf-8". Every other
+  // fixed-literal-body response in this file (400's "bad request", 405's
+  // "method not allowed", 503's "service unavailable") pairs a text/plain
+  // Content-Type with its plain-text body; this one didn't, a mismatch
+  // between declared and actual content type of the same shape the 400
+  // response was fixed for when it had no Content-Type header at all.
+  // Confirmed directly against a real running server with 404.html deleted:
+  // requesting any nonexistent path came back "Content-Type: text/html;
+  // charset=utf-8" for a body containing no markup whatsoever.
+  const dir = makePublicDir(t);
+  fs.rmSync(path.join(dir, '404.html'));
+
+  await withServer(dir, async (port) => {
+    const res = await get(port, '/this-does-not-exist-either');
+    assert.equal(res.status, 404);
+    assert.equal(res.body, 'not found');
+    assert.equal(res.contentType, 'text/plain; charset=utf-8');
+  });
+});
+
 test('server: traversal attempt gets a 400, not a file', async (t) => {
   const dir = makePublicDir(t);
   await withServer(dir, async (port) => {

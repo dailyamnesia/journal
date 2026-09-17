@@ -187,8 +187,19 @@ function createRequestHandler(publicDir) {
     function serveNotFound() {
       if (closed) return;
       const notFoundPath = path.join(publicDir, '404.html');
+      // This fallback only fires once 404.html itself is unusable (missing,
+      // outside publicDir, unopenable, or not a regular file), and its body
+      // is the plain-text literal "not found" -- not markup. Every other
+      // fixed-literal-body response in this file (400, 405, 503) already
+      // pairs a text/plain Content-Type with its plain-text body; this one
+      // claimed text/html instead, a mismatch between the declared and
+      // actual content type of the same kind the 400 response was fixed for
+      // (547b039) when it had no Content-Type at all. Confirmed directly:
+      // against a real running server with 404.html deleted, requesting any
+      // nonexistent path returned "Content-Type: text/html; charset=utf-8"
+      // for a body that is plain text with no markup in it.
       const plainFallback = () => {
-        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         return res.end('not found');
       };
       // Every other file this handler ever opens -- the requested file
