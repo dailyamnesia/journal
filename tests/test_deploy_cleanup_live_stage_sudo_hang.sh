@@ -82,6 +82,7 @@ set -uo pipefail
 BUILD_SRC="$WORK/build_src_unused"
 BUILD_DIR="$WORK/build_dir_unused"
 LIVE_STAGE=""
+DIFF_STDERR=""
 $SYNC_TIMEOUT_LINE
 $CLEANUP_SRC
 trap cleanup EXIT

@@ -97,6 +97,7 @@ BUILD_SRC="$WORK/build_src"
 BUILD_DIR="$WORK/build_dir_unused"
 LIVE_SERVER="$WORK/live/server.js"
 LIVE_STAGE=""
+DIFF_STDERR=""
 $SYNC_TIMEOUT_LINE
 $RUN_SYNCED_SRC
 $CLEANUP_SRC

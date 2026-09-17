@@ -241,6 +241,18 @@ BUILD_DIR=""
 # so cleanup() can reference it unconditionally under `set -u` even on an
 # abort that happens before that use site is ever reached.
 LIVE_STAGE=""
+# Same in-flight-tracking shape as $LIVE_STAGE just above, for a different
+# temp path: the server.js diff/ambiguity check below creates a plain
+# (unprivileged) `mktemp` file to capture `sudo diff`'s stderr, then removes
+# it itself a couple of statements later. That removal is never reached if
+# the script is interrupted (TERM/INT/HUP/QUIT, or the watchdog's own
+# `kill -TERM "$$"`) while the `sudo diff` call between creation and removal
+# is still running -- and unlike $LIVE_STAGE, cleanup() never tracked this
+# one at all, so it leaked into /tmp on every such interruption, forever,
+# with nothing in this script ever noticing or cleaning it up on a later
+# run. Declared here (empty), not at its own use site, for the identical
+# `set -u` reason $LIVE_STAGE already is.
+DIFF_STDERR=""
 # A bare `trap 'rm -rf "$BUILD_DIR"' EXIT` doesn't wait for a still-running
 # foreground child (the `sudo rsync` below) before running: a TERM/INT
 # delivered directly to this script's own PID (not its whole process group —
@@ -353,6 +365,14 @@ cleanup() {
   # running the identical repro with this fix in place returned within the
   # timeout bound instead of hanging.
   [ -n "$LIVE_STAGE" ] && { timeout "$SYNC_TIMEOUT_S" sudo rm -f "$LIVE_STAGE" 2>/dev/null || true; }
+  # $DIFF_STDERR (see the server.js diff/ambiguity check below) is an
+  # unprivileged plain-`mktemp` file, unlike $LIVE_STAGE above -- no `sudo`
+  # and no `timeout` needed to remove it, since a local unprivileged `rm -f`
+  # on a small file it already owns can't hang the way a `sudo` call can.
+  # `|| true` for the same reason as $LIVE_STAGE's line: a missing/already-
+  # removed $DIFF_STDERR makes this a no-op, and that must not abort the
+  # rest of cleanup() under `set -e`.
+  [ -n "$DIFF_STDERR" ] && { rm -f "$DIFF_STDERR" 2>/dev/null || true; }
   true
 }
 trap cleanup EXIT
@@ -1193,6 +1213,7 @@ else
   timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
   DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
   rm -f "$DIFF_STDERR"
+  DIFF_STDERR=""
   # A hang here (timeout's own exit 124) leaves $DIFF_STDERR_CONTENT empty
   # -- nothing sudo/diff wrote counts as "unexpected stderr" -- so the
   # ambiguous-comparison check just below would otherwise miss it and fall
