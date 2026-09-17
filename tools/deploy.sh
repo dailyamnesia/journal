@@ -356,7 +356,41 @@ cleanup() {
   true
 }
 trap cleanup EXIT
-git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"
+# Every other external call in this script that can block on something other
+# than raw CPU -- git fetch above, both test suites below, all four systemctl
+# calls, every sudo call in the sync section -- is already wrapped in
+# `timeout`, for the same reason each of those comments gives: the call is
+# accepted but nothing guarantees the other end (a network peer, a D-Bus
+# manager, a credential prompt) ever actually finishes it. `git worktree add`
+# is exactly this same shape and was missed: unlike `git fetch`, it doesn't
+# touch the network directly, but it does perform a real checkout, which by
+# default runs the repo's `post-checkout` hook (whatever a clone's local
+# `.git/hooks/post-checkout` -- or a hooksPath template applied at clone time,
+# e.g. many husky/lefthook/direnv-style setups -- happens to do), and nothing
+# about that hook is under this script's control or guaranteed to be fast or
+# even to terminate (a hook that shells out to `npm install`/`git lfs
+# smudge`/anything else that can itself hang on a slow or dead network
+# endpoint is a completely ordinary way for this to happen, no malice
+# required). Left unwrapped, a hanging hook wedges the script right here,
+# still holding $LOCKFILE, with no FAILED message and no other symptom --
+# identical in shape to the already-fixed git-fetch/test-suite/systemctl
+# hangs. Reproduced directly: a scratch repo with an executable
+# `.git/hooks/post-checkout` that just sleeps, run through this exact
+# `git worktree add --quiet --detach` invocation unmodified, hung
+# indefinitely (confirmed via an external `timeout`, since the line itself
+# had no protection of its own); the same repo's `git worktree remove` was
+# separately confirmed to invoke no such hook, so that call (in cleanup()
+# below) isn't subject to this particular hang. 60s matches the same
+# generous-headroom bound already used for `git fetch` just above, for the
+# same class of call. Overridable via an env var, the same testability
+# pattern already used for $SYNC_TIMEOUT_S and restart_service()'s own
+# timeout, so a regression test can exercise the timeout path itself in
+# bounded time instead of waiting out the real 60s default.
+WORKTREE_ADD_TIMEOUT_S="${DEPLOY_SH_WORKTREE_ADD_TIMEOUT_S:-60}"
+if ! timeout "$WORKTREE_ADD_TIMEOUT_S" git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"; then
+  echo "FAILED: git worktree add --detach $BUILD_SRC $LOCAL_REV did not finish within ${WORKTREE_ADD_TIMEOUT_S}s (or failed) -- a hung post-checkout hook (or other slow/stuck checkout step) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 # Both suites run against $BUILD_SRC, not this live checkout, for the same
 # reason the build step below does: tests/test_build_site.py and
