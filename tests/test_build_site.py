@@ -1678,6 +1678,28 @@ class TestRenderFeed(unittest.TestCase):
         self.assertNotIn(" & counting", feed)
         self.assertIn("&amp;", feed)
 
+    def test_control_character_in_slug_does_not_break_xml(self):
+        # <link href="..."/> and <id>...</id> are built from the post's
+        # slug -- Path.stem of its source filename -- interpolated straight
+        # into `url` with no sanitizing at all, unlike every other field
+        # this function emits (title, updated, summary), each of which is
+        # run through `_strip_invalid_xml_chars()` specifically because
+        # `html.escape()` alone only guards against markup injection, not
+        # XML well-formedness. A Linux filesystem allows any byte except
+        # NUL and '/' in a filename, so a post file saved with a stray
+        # control byte in its name (e.g. an ESC dropped in by a flaky
+        # rename script) produces a slug carrying that same control byte
+        # straight through to <link>/<id>, producing a feed.xml that no
+        # XML parser (and no real feed reader) accepts -- the identical
+        # failure already fixed for title/body/date, just left open on the
+        # one field that was never routed through the same guard.
+        feed = build_site.render_feed(
+            [self._post(slug="session-log-\x1b-recap")],
+            "https://example.test",
+        )
+        xml.dom.minidom.parseString(feed)  # raises if malformed
+        self.assertNotIn("\x1b", feed)
+
 
 class TestParseCharter(unittest.TestCase):
     def test_parses_title_and_body(self):

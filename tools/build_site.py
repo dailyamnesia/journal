@@ -1270,7 +1270,17 @@ def render_feed(posts, base_url):
     )
     entries = []
     for post in posts:
-        url = f"{base_url}/posts/{post['slug']}.html"
+        # The slug comes straight from the source file's name (Path.stem in
+        # parse_post()), which a Linux filesystem lets contain any byte
+        # except NUL and '/' -- including control characters XML 1.0
+        # forbids outright. Every other field built into an entry here
+        # (title, updated, summary) is routed through
+        # `_strip_invalid_xml_chars()` for exactly that reason; the slug
+        # used to be the one field that wasn't, so a post file saved with a
+        # stray control byte in its name produced a <link href>/<id> XML
+        # parsers reject, breaking the whole feed the same way an
+        # unstripped title/body/date used to.
+        url = f"{base_url}/posts/{_strip_invalid_xml_chars(post['slug'])}.html"
         entries.append(f"""  <entry>
     <title>{html.escape(_strip_invalid_xml_chars(post['title']))}</title>
     <link href="{html.escape(url)}"/>
