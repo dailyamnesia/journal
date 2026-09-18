@@ -136,6 +136,12 @@ LIVE_ROOT=/srv/dailyamnesia
 LIVE_PUBLIC="$LIVE_ROOT/public"
 LIVE_SERVER="$LIVE_ROOT/server.js"
 
+# Defined this early (rather than down by run_synced(), where it originally
+# lived) so the OLD_POST_COUNT guard's own `sudo test -d`/`sudo find` calls
+# below can share the same bound -- see the comment at that call site for
+# why they need it too. Overridable via the same env var either way.
+SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"
+
 echo "== checking git state =="
 # `git status --porcelain`'s own exit status was discarded here: embedded
 # directly inside `$( ... )` as an argument to `[ -n ... ]`, its failure
@@ -661,10 +667,39 @@ if ! sudo -n true 2>/dev/null; then
   echo "FAILED: sudo is not usable non-interactively right now (expired/missing credentials, no controlling TTY, or similar) — refusing to guess whether posts are currently live rather than risk silently treating a real deploy as a first deploy." >&2
   exit 1
 fi
+# `sudo -n true` above only confirms sudo's health at that one instant --
+# the same caveat run_synced()'s own comment (far below) already makes for
+# every sudo call in the sync section, which is exactly why every one of
+# those is wrapped in `timeout`. These next two sudo calls were the one
+# pair left out of that treatment: unlike `sudo -n true`, a plain
+# `sudo test -d`/`sudo find` with no `-n` can still block on a password
+# prompt nobody is watching to answer if the cached credential expires in
+# the gap right after the health check above, or hang on a stat()/readdir()
+# against a wedged filesystem underneath $LIVE_PUBLIC/posts (NFS, FUSE,
+# anything else that can block a syscall indefinitely) -- wedging this
+# deploy right here, still holding $LOCKFILE, with no FAILED message and no
+# other symptom, identical in shape to every other now-fixed hang in this
+# file. Reproduced directly: a scratch stand-in `sudo` that answers
+# `-n true` instantly but hangs on anything else, run through this exact
+# unwrapped `sudo test -d` / `sudo find` pair, blocked indefinitely
+# (confirmed via an external `timeout`, since the lines themselves had no
+# protection of their own). Wrapping both in `timeout "$SYNC_TIMEOUT_S"`
+# (defined early, above, specifically so it's available here) and checking
+# for its exit 124 explicitly -- the same shape already used for
+# `sudo test -e "$LIVE_SERVER"` further down -- closes it: re-running the
+# identical repro with this fix in place failed loudly within
+# $SYNC_TIMEOUT_S instead of hanging, while a real sudo against a real
+# existing (or genuinely first-deploy, not-yet-existing) posts/ directory
+# still reaches the same OLD_POST_COUNT as before, unaffected.
 OLD_POST_COUNT=0
-if sudo test -d "$LIVE_PUBLIC/posts"; then
-  if ! OLD_POST_COUNT="$(sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
-    echo "FAILED: could not count post pages currently live in $LIVE_PUBLIC/posts." >&2
+dir_status=0
+timeout "$SYNC_TIMEOUT_S" sudo test -d "$LIVE_PUBLIC/posts" || dir_status=$?
+if [ "$dir_status" -eq 124 ]; then
+  echo "FAILED: 'sudo test -d $LIVE_PUBLIC/posts' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+elif [ "$dir_status" -eq 0 ]; then
+  if ! OLD_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
+    echo "FAILED: could not count post pages currently live in $LIVE_PUBLIC/posts (sudo find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
     exit 1
   fi
 fi
@@ -935,8 +970,10 @@ watch_supervisor &
 # other invocation (modeling exactly this) hung the real, unmodified `sudo
 # mkdir -p "$LIVE_PUBLIC/posts"` line indefinitely before this fix, and
 # failed within the timeout after it. 60s is generous headroom for local
-# filesystem operations against a few hundred small files.
-SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"
+# filesystem operations against a few hundred small files. ($SYNC_TIMEOUT_S
+# itself is now defined earlier, right after $LIVE_SERVER above, so the
+# OLD_POST_COUNT guard's own two sudo calls can share this exact bound too
+# -- see that call site's comment.)
 run_synced() {
   if ! timeout "$SYNC_TIMEOUT_S" "$@"; then
     echo "FAILED: '$*' did not finish within ${SYNC_TIMEOUT_S}s (or failed) -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
