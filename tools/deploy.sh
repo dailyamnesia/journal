@@ -549,7 +549,32 @@ BUILD_DIR="$(mktemp -d)"
 chmod 755 "$BUILD_DIR"
 
 echo "== building site =="
-python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"
+# build_site.py's _first_commit_time() shells out to `git log --follow`
+# once per post (see the BUILD_SRC comment above) with no timeout of its
+# own -- the exact same "the call is accepted but nothing guarantees it
+# ever actually finishes" hazard already fixed for git fetch, git
+# worktree add, both test suites, and every systemctl/sudo call in this
+# script, just at the one remaining external call the "every other
+# external call ... is already wrapped in timeout" comment above
+# WORKTREE_ADD_TIMEOUT_S never actually reached. A stuck `git log` (a
+# wedged filesystem, index/pack lock contention, anything else that can
+# block a local git subprocess indefinitely) wedges this deploy right
+# here, still holding $LOCKFILE, with no FAILED message and no other
+# symptom -- identical in shape to every other now-fixed hang in this
+# file. Reproduced directly: a scratch `git` on PATH that hangs only for
+# `git log` (every other subcommand passed through to the real binary),
+# run through the real, unmodified build_site.py against this repo's own
+# posts, hung indefinitely (confirmed via an external `timeout`, since
+# this line had no protection of its own). 300s is generous headroom
+# over a real build's ~11s at the current post count, matching the same
+# order of magnitude already used for both test suites, and leaves room
+# for _first_commit_time()'s own noted cost growing with the repo's post
+# count and commit history.
+BUILD_TIMEOUT_S="${DEPLOY_SH_BUILD_TIMEOUT_S:-300}"
+if ! timeout "$BUILD_TIMEOUT_S" python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"; then
+  echo "FAILED: building the site did not finish within ${BUILD_TIMEOUT_S}s (or failed) -- a hung git subprocess (git log --follow, called once per post by build_site.py) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 # Same drift as the chmod above, one level down, on the one subdirectory the
 # fix above doesn't reach: build_site.py itself creates "$BUILD_DIR/posts"
