@@ -285,6 +285,52 @@ def _is_invisible_char(ch):
     return unicodedata.category(ch) == "Cc"
 
 
+def _has_unescaped_closing_quote(value):
+    """True if `value` (a frontmatter value already confirmed to start and
+    end with a literal '"') actually ends on a real, unescaped closing
+    quote -- not the second half of an escaped `\\"` sequence with no real
+    closing quote anywhere after it.
+
+    The frontmatter quote-stripping below decides a value is "wrapped in
+    quotes" purely by checking whether `value[0]` and `value[-1]` are both
+    `"` (see the caller). That check can't tell a genuine closing quote
+    apart from an escaped one: a value like `"She said \\"stop\\"` -- an
+    author who opened a quoted title, embedded an escaped `\\"stop\\"` for
+    emphasis, and then forgot the actual closing quote for the title as a
+    whole -- also happens to end in a literal `"` character, the same as a
+    properly closed `"...\\"."` value does. Both satisfied the naive check
+    and both used to get the outer quotes sliced off unconditionally: for
+    the malformed case, slicing off `value[-1]` removes the escaped quote's
+    own second half, leaving its paired backslash with nothing left to
+    unescape (`value.replace('\\"', '"')` needs the closing `"` right next
+    to it, and that's exactly the character just sliced away) -- so the
+    stored title ends on a stray, literal backslash character instead of
+    either the intended text or the original, unmodified raw line.
+    parse_post() on `title: "She said \\"stop\\"` used to produce the title
+    `She said "stop\\` (note the trailing backslash), reaching <title>,
+    <h1>, the index link, and the feed entry.
+
+    A closing quote is only "real" if it isn't itself escaped, i.e. the run
+    of backslashes immediately before it has even length (0, 2, 4, ... --
+    each pair is a would-be-escaped backslash followed by an ordinary
+    character, never reaching this quote; this parser has no `\\\\` escape
+    of its own, but the parity check stays correct either way). An odd-length
+    run means the last backslash pairs with this final quote instead,
+    escaping it, so it isn't a closing delimiter at all and the value was
+    never actually terminated -- exactly like the unquoted-value case
+    (`title: He said "no"`, see test_unquoted_value_ending_in_a_literal_
+    quote_mark_is_not_mangled), the safest thing to do is leave the raw
+    text -- quotes, backslashes, and all -- untouched, rather than silently
+    "closing" a quote the author never actually closed.
+    """
+    backslash_run = 0
+    idx = len(value) - 2
+    while idx >= 0 and value[idx] == "\\":
+        backslash_run += 1
+        idx -= 1
+    return backslash_run % 2 == 0
+
+
 def parse_post(path):
     # UnicodeDecodeError (e.g. a post accidentally saved with Windows-1252
     # smart quotes, or any other stray non-UTF-8 byte) is itself a
@@ -312,7 +358,12 @@ def parse_post(path):
     for line in frontmatter.splitlines():
         key, _, value = line.partition(":")
         value = value.strip()
-        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        if (
+            len(value) >= 2
+            and value[0] == '"'
+            and value[-1] == '"'
+            and _has_unescaped_closing_quote(value)
+        ):
             # Strip again after removing the quotes, not just before: the
             # `value.strip()` above only ever trims whitespace *outside* the
             # quoted pair (nothing after the colon but leading/trailing

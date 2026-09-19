@@ -1501,6 +1501,40 @@ class TestParsePost(unittest.TestCase):
             post = build_site.parse_post(path)
             self.assertEqual(post["title"], 'A deck named "." blamed the wrong thing')
 
+    def test_quoted_value_missing_its_real_closing_quote_is_left_as_raw_text(self):
+        # The sibling gap the escaped-quote fix above left open: a value can
+        # start and end on a literal '"' character without ever actually
+        # being closed, if the final '"' is itself the second half of an
+        # escaped `\"` sequence rather than a real closing delimiter -- e.g.
+        # an author who opened a quoted title, embedded an escaped
+        # `\"stop\"` for emphasis, and then forgot the real closing quote
+        # for the title as a whole: `title: "She said \"stop\"`. That value
+        # still satisfies `value[0] == '"' and value[-1] == '"'` (the last
+        # character really is a quote mark), so it used to get the outer
+        # quotes sliced off unconditionally -- but slicing off `value[-1]`
+        # removes the escaped quote's own second half, leaving its paired
+        # backslash with no `"` left next to it for
+        # `value.replace('\\"', '"')` to resolve. The stored title ended on
+        # a stray, literal backslash character instead of either the
+        # intended text or the original raw line:
+        # parse_post() on `title: "She said \"stop\"` used to produce the
+        # title `She said "stop\` (note the trailing backslash), reaching
+        # <title>, <h1>, the index link, and the feed entry. Since the value
+        # was never actually terminated, the safest thing to do is leave it
+        # exactly as written -- quotes, backslashes, and all -- the same way
+        # an unquoted value ending in a literal quote mark is already left
+        # alone (see test_unquoted_value_ending_in_a_literal_quote_mark_is_
+        # not_mangled), rather than silently "closing" a quote the author
+        # never actually closed.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-unterminated-quote.md"
+            path.write_text(
+                '---\ntitle: "She said \\"stop\\"\ndate: 2026-01-01\n---\nBody.\n',
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], '"She said \\"stop\\"')
+
     def test_control_character_in_title_and_body_is_stripped(self):
         # render_feed() strips characters XML 1.0 forbids (control bytes,
         # lone surrogates, U+FFFE/U+FFFF -- see _strip_invalid_xml_chars())
