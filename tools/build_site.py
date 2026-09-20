@@ -345,7 +345,19 @@ def parse_post(path):
     # point at which file broke it, not just how. Re-raising here closes
     # the one call site that skipped that convention.
     try:
-        text = path.read_text(encoding="utf-8")
+        # "utf-8-sig", not plain "utf-8": several common Windows tools
+        # (Notepad, PowerShell's Out-File/Set-Content, Excel's text export)
+        # default to writing a leading UTF-8 byte-order mark (U+FEFF), which
+        # is invisible in virtually any editor. Plain "utf-8" decodes that
+        # BOM as a real leading character instead of stripping it, so
+        # `text.startswith("---\n")` below fails on an otherwise
+        # perfectly well-formed post -- and since build() has no per-post
+        # exception handling, that one invisible byte crashes the entire
+        # site build. "utf-8-sig" strips a leading BOM if present and
+        # otherwise decodes identically to "utf-8", so this is safe for
+        # every file, BOM or not -- the same fix already applied to
+        # flashback's own deck-file reader for the identical reason.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as e:
         raise ValueError(f"{path}: not valid UTF-8: {e}") from None
     if not text.startswith("---\n"):
@@ -476,7 +488,11 @@ def parse_charter(path=CHARTER_PATH):
     # than let a raw UnicodeDecodeError (itself a ValueError, just one with
     # no path in its message) pass through unlabeled.
     try:
-        text = path.read_text(encoding="utf-8")
+        # See parse_post() above for why "utf-8-sig" and not plain "utf-8":
+        # a leading UTF-8 byte-order mark is invisible in virtually any
+        # editor but would otherwise land as the first character of
+        # `title_line`, failing the `startswith("# ")` check below.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as e:
         raise ValueError(f"{path}: not valid UTF-8: {e}") from None
     title_line, _, body = text.partition("\n")

@@ -1087,6 +1087,26 @@ class TestParsePost(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_site.parse_post(path)
 
+    def test_leading_byte_order_mark_still_parses(self):
+        # A leading UTF-8 byte-order mark (U+FEFF) is the default output of
+        # several common Windows tools (Notepad, PowerShell's Out-File/
+        # Set-Content, Excel's text export) and is invisible in virtually
+        # any editor -- a post saved this way looks completely normal to
+        # its author. Reading with plain "utf-8" decodes the BOM as a real
+        # leading character instead of stripping it, so
+        # `text.startswith("---\n")` used to fail on an otherwise
+        # well-formed post -- and since build() has no per-post exception
+        # handling, that one invisible byte crashed the entire site build.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-my-post.md"
+            path.write_bytes(
+                ("\ufeff---\ntitle: My Post\ndate: 2026-01-01\n---\n"
+                 "Hello world.\n").encode("utf-8")
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "My Post")
+            self.assertEqual(post["body"], "Hello world.")
+
     def test_unterminated_frontmatter_names_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "bad.md"
@@ -1794,6 +1814,20 @@ class TestParseCharter(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 build_site.parse_charter(path)
             self.assertIn(str(path), str(ctx.exception))
+
+    def test_leading_byte_order_mark_still_parses(self):
+        # Same gap as parse_post()'s own BOM handling above: a leading
+        # UTF-8 byte-order mark is invisible in virtually any editor, but
+        # plain "utf-8" decodes it as a real leading character instead of
+        # stripping it -- landing as the first character of `title_line`
+        # and failing the `startswith("# ")` check below on an otherwise
+        # perfectly well-formed CHARTER.md.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.write_bytes("\ufeff# The Charter\n\nBody text.\n".encode("utf-8"))
+            title, body = build_site.parse_charter(path)
+            self.assertEqual(title, "The Charter")
+            self.assertEqual(body, "Body text.")
 
     def test_actual_charter_parses(self):
         # The real CHARTER.md this project runs on should render cleanly
