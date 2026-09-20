@@ -328,7 +328,38 @@ cleanup() {
   trap '' TERM INT HUP QUIT
   pkill -TERM -P $$ 2>/dev/null || true
   wait 2>/dev/null || true
-  git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
+  # This was the one remaining external/blocking call in the whole file left
+  # unwrapped by `timeout` (session 250). The comment above `trap cleanup EXIT`
+  # already ruled out one hang risk here -- `git worktree remove` invokes no
+  # post-checkout-style hook, unlike `git worktree add` above -- but that
+  # doesn't cover the same "wedged filesystem" threat model this file already
+  # treats as real for the OLD_POST_COUNT guard's `sudo find` against
+  # $LIVE_PUBLIC/posts: `git worktree remove` still has to stat/unlink files
+  # under $BUILD_SRC and update this repo's own .git/worktrees/<id>/ metadata,
+  # and nothing guarantees either filesystem answers promptly. Because this
+  # line runs inside cleanup(), the EXIT trap that fires on every exit path,
+  # a hang here means the script never actually exits -- the flock supervisor
+  # keeps holding $LOCKFILE forever, silently blocking every future deploy
+  # with no FAILED message, identical in shape to every other now-fixed hang
+  # in this file. Worse than most of them: by this point `trap '' TERM INT
+  # HUP QUIT` above has already disarmed an operator's ordinary Ctrl-C/kill/
+  # dropped-SSH-HUP, so only SIGKILL could stop it once wedged here. This is
+  # also the same worktree `git worktree add` above may have just timed out
+  # partway through creating (a hung post-checkout hook still leaves the
+  # worktree registered before the hook runs), so a single wedged run could
+  # hang here right after already hanging there. Reproduced directly: a
+  # scratch repo worktree, removed via this exact line unmodified with a
+  # stand-in `git` on PATH that hangs only for `worktree remove` (every other
+  # subcommand passed through to the real binary), hung indefinitely under an
+  # external `timeout` (confirmed via its exit 124, since the line itself had
+  # no protection). $SYNC_TIMEOUT_S matches the bound already used for every
+  # other cleanup()/sync-section call of this shape; the existing
+  # `|| rm -rf "$BUILD_SRC"` fallback (a known, already-accepted "prunable"
+  # .git/worktrees/ leak, same as an interrupted `git worktree add`) now
+  # fires on a `timeout`-forced failure the same way it already did on an
+  # ordinary one. Re-running the identical repro with this fix in place
+  # returned within the timeout bound, via the fallback, instead of hanging.
+  timeout "$SYNC_TIMEOUT_S" git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
   rm -rf "$BUILD_DIR"
   # $LIVE_STAGE (see the server.js swap below) is root-owned, created via
   # sudo, and outside $BUILD_SRC/$BUILD_DIR entirely -- unlike every other
@@ -406,7 +437,9 @@ trap cleanup EXIT
 # indefinitely (confirmed via an external `timeout`, since the line itself
 # had no protection of its own); the same repo's `git worktree remove` was
 # separately confirmed to invoke no such hook, so that call (in cleanup()
-# below) isn't subject to this particular hang. 60s matches the same
+# below) isn't subject to this particular hang -- it's since been given its
+# own `timeout` anyway, for a different hang risk (session 250, see the
+# comment there). 60s matches the same
 # generous-headroom bound already used for `git fetch` just above, for the
 # same class of call. Overridable via an env var, the same testability
 # pattern already used for $SYNC_TIMEOUT_S and restart_service()'s own
