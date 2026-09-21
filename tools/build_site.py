@@ -783,8 +783,60 @@ def render_inline(text):
     # Code spans are stashed out and restored after bold/italic run, so
     # e.g. `*not italic*` isn't itself reinterpreted as markdown.
     text, code_spans = _stash_code_spans(text)
-    text = _BOLD_RE.sub(_bold_replace, text)
+    # _bold_replace() already resolves a bold match's own *nested* italic
+    # run scoped to just that match, specifically so the raw "*" delimiters
+    # of a nested "**bold *and italic* together**"-style run never reach
+    # the separate _ITALIC_RE.sub() pass below as ordinary text -- see its
+    # own comment. That guarantee depends on the nested resolution always
+    # either fully consuming the inner "*...*" (turning it into <em>, no
+    # asterisks left at all) or leaving it as an entirely separate,
+    # unmatched run elsewhere. But when the nested run's own boundary is
+    # invisible (e.g. a zero-width space right inside the "*...*", see
+    # _has_invisible_boundary()), _italic_replace() rejects *just that
+    # match* and hands back its "*...*" delimiters completely unresolved --
+    # correct in isolation, but it leaves raw, still-"*"-delimited text
+    # sitting inside this bold match's own <strong>...</strong> output,
+    # which the _ITALIC_RE.sub() pass below (a blind, whole-string scan
+    # with no notion of where this match's own boundaries were, the same
+    # thing _bold_replace()'s own comment already warns about for the
+    # "leftover unpaired '*'" case) is then free to pair with an unrelated,
+    # unconsumed "*" *outside* this match entirely -- e.g. the extra
+    # leading "*" of a "***" bold+italic combo just before it -- producing
+    # crossing, invalid markup instead of well-formed nesting:
+    # render_inline("***a*​*b**") used to render
+    # "<em><strong>a</em>​*b</strong>" (an <em> that opens inside
+    # <strong> and closes after it, straddling the boundary), the same
+    # failure shape test_nested_italic_inside_triple_asterisk_bold_does_
+    # not_cross_tags already guards against for the *successfully*-resolved
+    # nested-italic case, just reached through the invisible-boundary
+    # rejection path that fix didn't anticipate.
+    #
+    # Stashing a bold match's own output behind a placeholder -- the same
+    # code-span technique used two lines above -- closes the gap, but only
+    # needs to apply when that output still contains a raw "*": that's the
+    # only case _ITALIC_RE (which can't match anything without a "*") could
+    # possibly reach into. A clean <strong>...</strong> with no leftover
+    # asterisk (the ordinary case, and the "***really important***" case --
+    # its own group(1) has no "*" in it at all) is left exposed on purpose,
+    # so the genuinely separate, single leading/trailing "*" of a "***"
+    # combo -- outside this match's own captured text entirely -- can still
+    # pair with its partner and wrap the whole <strong> block in <em>,
+    # exactly as test_triple_asterisk_bold_italic_combo_still_nests_
+    # correctly and test_nested_italic_inside_triple_asterisk_bold_does_
+    # not_cross_tags already require.
+    bold_spans = []
+
+    def _stash_bold(match):
+        replacement = _bold_replace(match)
+        if "*" not in replacement:
+            return replacement
+        bold_spans.append(replacement)
+        return f"\x01{len(bold_spans) - 1}\x01"
+
+    text = _BOLD_RE.sub(_stash_bold, text)
     text = _ITALIC_RE.sub(_italic_replace, text)
+    for i, span in enumerate(bold_spans):
+        text = text.replace(f"\x01{i}\x01", span)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", f"<code>{code}</code>")
     return text
@@ -1235,8 +1287,47 @@ def _summary(body):
     # "*" in "3 * 4 * 5") and corrupting code-span content (e.g. "`2*a`"
     # became "2a") rather than only removing real markdown delimiters.
     text, code_spans = _stash_code_spans(" ".join(paragraph))
-    text = _BOLD_RE.sub(_bold_strip_replace, text)
+    # Mirrors render_inline()'s own fix for the identical gap: _bold_strip_
+    # replace() resolves a bold match's *nested* italic run scoped to just
+    # that match, but when the nested run's own boundary is invisible (see
+    # _has_invisible_boundary()), the rejected match hands back its raw,
+    # unresolved "*...*" text -- correct in isolation, but leaving "*"
+    # characters sitting in the bold match's own plain-text output for the
+    # separate _ITALIC_RE.sub() pass below to find and pair with an
+    # unrelated "*" *outside* this match entirely (e.g. the extra leading
+    # "*" of a "***" combo). Unlike render_inline(), there's no HTML tag to
+    # visibly "cross" here, but the corruption is the same shape: a leading,
+    # unconsumed "*" and a rejected nested-italic "*" inside the bold
+    # match's own output end up pairing with each other instead of staying
+    # put, silently deleting real "*" characters and/or mis-scoping which
+    # text counts as italic. _summary("***a*​*b**") used to return
+    # "a​*b" (the leading "*" and the bold match's own "a" spliced
+    # into a bogus italic pair, both silently vanishing) instead of leaving
+    # each unmatched/rejected asterisk as literal text. Stashing each bold
+    # match's own final output behind a placeholder first -- the same
+    # code-span technique used one line above -- closes the gap the same
+    # way render_inline() now does, but (also mirroring render_inline())
+    # only when that output still contains a raw "*" -- the only thing
+    # _ITALIC_RE could possibly find in it. An ordinary bold match's
+    # stripped text (e.g. "really important" from "***really important***",
+    # with no "*" left in it at all) is left exposed on purpose, so the
+    # genuinely separate leading/trailing "*" of a "***" combo -- outside
+    # this match's own captured text entirely -- can still pair with its
+    # partner and strip the whole span down to plain text, matching how
+    # render_inline() renders the same "***...***" combo as nested markup.
+    bold_spans = []
+
+    def _stash_bold(match):
+        replacement = _bold_strip_replace(match)
+        if "*" not in replacement:
+            return replacement
+        bold_spans.append(replacement)
+        return f"\x01{len(bold_spans) - 1}\x01"
+
+    text = _BOLD_RE.sub(_stash_bold, text)
     text = _ITALIC_RE.sub(_italic_strip_replace, text)
+    for i, span in enumerate(bold_spans):
+        text = text.replace(f"\x01{i}\x01", span)
     for i, code in enumerate(code_spans):
         text = text.replace(f"\x00{i}\x00", code)
     if len(text) > 280:

@@ -211,6 +211,42 @@ class TestRenderInline(unittest.TestCase):
                 stack.pop()
         self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
 
+    def test_invisible_boundary_on_nested_italic_inside_triple_asterisk_bold_does_not_cross_tags(self):
+        # A different way to reach the same crossing-tags failure shape as
+        # test_nested_italic_inside_triple_asterisk_bold_does_not_cross_tags
+        # above, not covered by that fix: that test's nested "*y*" run
+        # successfully resolves to <em>y</em>, leaving no raw "*" behind for
+        # the bold match's own output to leak. But when the nested run's
+        # own boundary is an invisible Unicode character (e.g. a zero-width
+        # space right inside the "*...*", see _has_invisible_boundary()),
+        # _italic_replace() rejects *that* match and hands its "*...*"
+        # delimiters back completely unresolved -- correct in isolation,
+        # but it leaves raw, still-"*"-delimited text sitting inside this
+        # bold match's own <strong>...</strong> output, free for the
+        # separate, whole-string _ITALIC_RE.sub() pass that runs after bold
+        # substitution to pair one of those leftover asterisks with the
+        # extra, unrelated leading "*" of this same "***" combo -- crossing
+        # tag boundaries instead of nesting cleanly.
+        # render_inline("***a*​*b**") used to render
+        # "<em><strong>a</em>​*b</strong>" (an <em> opening inside
+        # <strong> and closing after it).
+        zwsp = "​"
+        out = build_site.render_inline(f"***a*{zwsp}*b**")
+        stack = []
+        for closing, tag in re.findall(r"<(/?)(em|strong|code)>", out):
+            if not closing:
+                stack.append(tag)
+            else:
+                self.assertTrue(stack and stack[-1] == tag, f"crossing tags in {out!r}")
+                stack.pop()
+        self.assertEqual(stack, [], f"unclosed tag(s) in {out!r}")
+        # And the well-formed, no-invisible-boundary triple-asterisk combo
+        # this fix must not regress still nests correctly.
+        self.assertEqual(
+            build_site.render_inline("***really important***"),
+            "<em><strong>really important</strong></em>",
+        )
+
     def test_unpaired_asterisk_does_not_pair_across_an_unrelated_bold_delimiter(self):
         # A lone, unpaired "*" from a literal multiplication (e.g. "x*y",
         # with no space around the asterisk so it can't match
@@ -844,6 +880,26 @@ class TestSummary(unittest.TestCase):
         )
         self.assertEqual(build_site._summary(body), rendered_plain_text)
         self.assertEqual(build_site._summary(body), "2*a ab xy  xy` ab")
+
+    def test_invisible_boundary_on_nested_italic_inside_triple_asterisk_bold_matches_render_inline(self):
+        # _summary()'s sibling of TestRenderInline's
+        # test_invisible_boundary_on_nested_italic_inside_triple_asterisk_bold_does_not_cross_tags:
+        # a bold match's nested italic run rejected for an invisible
+        # boundary (see _has_invisible_boundary()) leaves raw "*..."
+        # delimiters inside _bold_strip_replace()'s own plain-text output,
+        # which the separate, whole-string _ITALIC_RE.sub() pass afterward
+        # used to pair with the unrelated leading "*" of the same "***"
+        # combo -- silently deleting real "*" characters and mis-scoping
+        # which text counts as italic instead of leaving each
+        # unmatched/rejected asterisk as literal text.
+        # _summary("***a*​*b**") used to return "a​*b" (the leading
+        # "*" and the bold match's own "a" spliced into a bogus italic
+        # pair, both silently vanishing) instead of staying in sync with
+        # what render_inline() actually renders for the same raw text.
+        zwsp = "​"
+        body = f"***a*{zwsp}*b**"
+        rendered_plain_text = re.sub(r"<[^>]+>", "", build_site.render_inline(body))
+        self.assertEqual(build_site._summary(body), rendered_plain_text)
 
     def test_truncates_long_paragraph_at_word_boundary(self):
         summary = build_site._summary("word " * 100)
