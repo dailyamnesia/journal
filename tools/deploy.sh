@@ -360,7 +360,29 @@ cleanup() {
   # ordinary one. Re-running the identical repro with this fix in place
   # returned within the timeout bound, via the fallback, instead of hanging.
   timeout "$SYNC_TIMEOUT_S" git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
-  rm -rf "$BUILD_DIR"
+  # This was the one remaining call in cleanup() left both unwrapped by
+  # `timeout` and without an `|| true` fallback -- missed by session 250's
+  # own pass right above it. Unlike its two immediate neighbors -- `git
+  # worktree remove` above (timeout-wrapped, session 250) and
+  # $LIVE_STAGE/$DIFF_STDERR below (both `|| true`) -- this line had
+  # neither: a wedged filesystem under $BUILD_DIR hangs it forever,
+  # identical in shape to the now-fixed `git worktree remove` hang one
+  # line up, and worse than most of this file's other hangs since it
+  # sits after `trap '' TERM INT HUP QUIT` above, so only SIGKILL can free
+  # it. And because cleanup() runs under `set -e`, an ordinary (non-hang)
+  # nonzero exit here -- e.g. a permission-denied entry under $BUILD_DIR
+  # -- aborts the rest of cleanup() immediately, silently skipping the
+  # $LIVE_STAGE/$DIFF_STDERR removals right below and clobbering the
+  # script's real exit code to whatever this `rm -rf` itself returned.
+  # Reproduced directly: a scratch harness matching this exact
+  # trap-cleanup shape, with a mode-000 subdirectory under a stand-in
+  # $BUILD_DIR and stand-in $LIVE_STAGE/$DIFF_STDERR files, exited `1`
+  # instead of its real `42` and left both stand-in files on disk,
+  # unremoved. Re-running the identical repro with `timeout` + `|| true`
+  # added here, matching the treatment every other line in this function
+  # already has, preserved the real exit code and ran both remaining
+  # cleanups.
+  timeout "$SYNC_TIMEOUT_S" rm -rf "$BUILD_DIR" 2>/dev/null || true
   # $LIVE_STAGE (see the server.js swap below) is root-owned, created via
   # sudo, and outside $BUILD_SRC/$BUILD_DIR entirely -- unlike every other
   # temp path this cleanup already handles, nothing else ever removes it.
