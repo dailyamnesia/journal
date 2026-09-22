@@ -732,8 +732,17 @@ find "$BUILD_DIR" -type f -exec chmod 644 {} +
 # received, the pipeline's exit status is find's non-zero one — which
 # would otherwise trip `set -e` and kill the script right here, silently,
 # with none of this script's own `FAILED:` messages ever printed.
-if ! NEW_POST_COUNT="$(find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
-  echo "FAILED: could not count post pages in the new build ($BUILD_DIR/posts)." >&2
+# This find was also missing the timeout wrapper its own sibling call below
+# (OLD_POST_COUNT's `sudo find "$LIVE_PUBLIC/posts"`) already has, and every
+# other filesystem-touching call in this script has by now been given —
+# $BUILD_DIR is an ordinary mktemp -d directory, not guaranteed to be on fast
+# local storage (TMPDIR can point anywhere), so a wedged filesystem here used
+# to hang the whole deploy indefinitely, still holding the lock, with no
+# FAILED message. Reproduced with a stand-in `find` on PATH that hangs only
+# for this exact invocation shape; timeout closes it the same way it already
+# does for OLD_POST_COUNT.
+if ! NEW_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
+  echo "FAILED: could not count post pages in the new build ($BUILD_DIR/posts) (find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
   exit 1
 fi
 
