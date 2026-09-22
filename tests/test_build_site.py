@@ -247,6 +247,46 @@ class TestRenderInline(unittest.TestCase):
             "<em><strong>really important</strong></em>",
         )
 
+    def test_emphasis_boundary_on_a_stashed_code_span_still_renders(self):
+        # _has_invisible_boundary() runs against a matched emphasis span's
+        # own captured text, which by the time _BOLD_RE/_ITALIC_RE run can
+        # start or end on this file's own internal code-span placeholder
+        # character ("\x00" from _stash_code_spans(), or "\x01" for a
+        # stashed bold span) rather than anything from the post's real
+        # content. _is_invisible_char() used to check the whole 'Cc'
+        # general category, which both placeholder bytes fall under (they're
+        # C0 control characters) alongside the genuine DEL/C1 control
+        # characters that check exists to catch -- so an emphasis run whose
+        # boundary happened to be a stashed code span was wrongly treated as
+        # having an invisible boundary and left as raw, unrendered
+        # asterisks around the code span instead of real <em>/<strong>
+        # markup.
+        self.assertEqual(
+            build_site.render_inline("*`code`text*"),
+            "<em><code>code</code>text</em>",
+        )
+        self.assertEqual(
+            build_site.render_inline("*text`code`*"),
+            "<em>text<code>code</code></em>",
+        )
+        self.assertEqual(
+            build_site.render_inline("**`code`text**"),
+            "<strong><code>code</code>text</strong>",
+        )
+        self.assertEqual(
+            build_site.render_inline("**text`code`**"),
+            "<strong>text<code>code</code></strong>",
+        )
+        self.assertEqual(
+            build_site.render_inline("*`code`*"),
+            "<em><code>code</code></em>",
+        )
+        # _summary() independently re-derives the same emphasis-stripping
+        # logic and must agree, not just render_inline().
+        self.assertEqual(build_site._summary("*`code`text*"), "codetext")
+        self.assertEqual(build_site._summary("*text`code`*"), "textcode")
+        self.assertEqual(build_site._summary("**`code`text**"), "codetext")
+
     def test_unpaired_asterisk_does_not_pair_across_an_unrelated_bold_delimiter(self):
         # A lone, unpaired "*" from a literal multiplication (e.g. "x*y",
         # with no space around the asterisk so it can't match

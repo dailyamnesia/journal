@@ -282,7 +282,42 @@ def _is_invisible_char(ch):
     # same failure mode as all six prior fixes. Checking the general
     # category directly, the same test already used for 'Cf' on the first
     # line of this function, closes the gap for this class the same way.
-    return unicodedata.category(ch) == "Cc"
+    #
+    # That check -- `unicodedata.category(ch) == "Cc"` -- covers the whole
+    # 'Cc' general category, not just the U+007F/U+0080-U+009F range
+    # described above. 'Cc' also includes the C0 control range
+    # (U+0000-U+001F), which this function was never meant to re-check on
+    # its own merits: real post content never carries a C0 byte by the time
+    # it reaches here, since parse_post() already runs every title/body
+    # through `_strip_invalid_xml_chars()` (which removes C0 outright)
+    # before this function -- or anything downstream of it -- ever sees the
+    # value. But `_has_invisible_boundary()` below doesn't only call this on
+    # raw post content: it checks the *captured text of an already-matched
+    # emphasis span*, and by the time `_BOLD_RE`/`_ITALIC_RE` run, that text
+    # can contain this file's own internal placeholder characters --
+    # `_stash_code_spans()`'s "\x00N\x00" and the bold-stash "\x01N\x01"
+    # markers both render_inline() and _summary() build around a matched
+    # `**bold**` span -- both made of C0 bytes (U+0000/U+0001) precisely
+    # because real content can never contain them. A blanket 'Cc' check
+    # can't tell "a placeholder this file inserted itself" apart from "a
+    # genuine DEL/C1 control byte a reader would never see": both satisfy
+    # `category(ch) == "Cc"`. So an emphasis span whose boundary happens to
+    # be a stashed code span (e.g. "*`code`text*" -- the boundary character
+    # is the "\x00" that opens the code-span placeholder) was rejected as
+    # having an "invisible boundary" and left as literal, unrendered
+    # asterisks around a stray <code> tag, even though a code span is about
+    # as visible as content gets. render_inline("*`code`text*") used to
+    # produce "*<code>code</code>text*" instead of
+    # "<em><code>code</code>text</em>", and _summary("*`code`text*") used to
+    # produce "*codetext*" instead of "codetext" -- both losing real
+    # emphasis markup to a false positive from this file's own bookkeeping,
+    # not from anything a post's author actually wrote. Checking the
+    # specific U+007F/U+0080-U+009F range directly, instead of the whole
+    # 'Cc' category, keeps catching the DEL/C1 case this check exists for
+    # while leaving the placeholder bytes -- entirely inside the C0 range
+    # this function doesn't need to cover on its own, per the paragraph
+    # above -- alone.
+    return code == 0x7F or 0x80 <= code <= 0x9F
 
 
 def _has_unescaped_closing_quote(value):
