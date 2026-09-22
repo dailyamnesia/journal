@@ -456,6 +456,29 @@ class TestRenderMarkdown(unittest.TestCase):
         self.assertIn("posts/example.md", str(ctx.exception))
         self.assertIn("heading has no visible heading text", str(ctx.exception))
 
+    def test_blank_heading_raises_when_the_blank_code_span_is_wrapped_in_emphasis(self):
+        # Same gap as the bare-blank-code-span cases above, reached through
+        # a code span wrapping nothing visible that's itself wrapped in
+        # *italic* or **bold** (e.g. "## *` `*" or "## **`​`**"). The
+        # "*"/"**" delimiters are visible characters, so simply resolving
+        # the code span (as the fix above already did) and checking what's
+        # left isn't enough on its own: `_is_blank_markdown()` used to see
+        # the surviving "*"/"**" text and call the heading non-blank -- but
+        # render_inline() doesn't actually leave those delimiters as literal
+        # text. A code-span placeholder is a "visible" emphasis boundary as
+        # far as `_has_invisible_boundary()` is concerned (that's what lets
+        # a *real* code span like "*`code`text*" still render), so the
+        # emphasis match succeeds and consumes the delimiters into
+        # <em>/<strong> tags wrapped around the still-blank <code> content.
+        # render_markdown("## *` `*\n...") used to produce
+        # "<h2><em><code> </code></em></h2>" instead of raising -- a heading
+        # present in the markup with no visible or accessible text at all.
+        for body in ("## *` `*\nSome text.", "## **`​`**\nSome text."):
+            with self.assertRaises(ValueError) as ctx:
+                build_site.render_markdown(body, source="posts/example.md")
+            self.assertIn("posts/example.md", str(ctx.exception))
+            self.assertIn("heading has no visible heading text", str(ctx.exception))
+
     def test_heading_with_a_normal_code_span_does_not_raise(self):
         # A code span with real, visible content is exactly as legitimate in
         # a heading as anywhere else -- _is_blank_markdown() must not reject
@@ -796,6 +819,23 @@ class TestRenderMarkdown(unittest.TestCase):
         body = "` `\n\nReal text."
         self.assertEqual(build_site.render_markdown(body), "<p>Real text.</p>")
 
+    def test_paragraph_that_is_only_an_emphasis_wrapped_blank_code_span_is_discarded(self):
+        # Same gap as test_blank_heading_raises_when_the_blank_code_span_is_
+        # wrapped_in_emphasis above, at the paragraph level: a paragraph
+        # whose only content is a blank code span wrapped in */** isn't
+        # rejected by raising (paragraphs, unlike headings, are legitimately
+        # allowed to be blank -- e.g. a stray blank line) but must still be
+        # discarded rather than rendered as a paragraph with nothing a
+        # reader or screen reader can perceive.
+        # render_markdown("Some real content.\n\n*` `*\n\nMore content.")
+        # used to produce "<p>Some real content.</p>\n<p><em><code>
+        # </code></em></p>\n<p>More content.</p>".
+        body = "Some real content.\n\n*` `*\n\nMore content."
+        self.assertEqual(
+            build_site.render_markdown(body),
+            "<p>Some real content.</p>\n<p>More content.</p>",
+        )
+
 
 class TestSummary(unittest.TestCase):
     def test_first_paragraph(self):
@@ -1129,6 +1169,21 @@ class TestSummary(unittest.TestCase):
         # formatting character inside the code span instead of an ordinary
         # space.
         body = "`​`\n\nReal text."
+        self.assertEqual(build_site._summary(body), "Real text.")
+
+    def test_paragraph_that_is_only_an_emphasis_wrapped_blank_code_span_is_skipped(self):
+        # Sibling of test_paragraph_that_is_only_an_emphasis_wrapped_blank_
+        # code_span_is_discarded in TestRenderMarkdown: a blank code span
+        # wrapped in */** (e.g. "*` `*") isn't just visible-looking to plain
+        # `_is_blank()` -- it used to also look non-blank to
+        # `_is_blank_markdown()` itself, since the "*" delimiters survived
+        # as literal text once the code span placeholder was resolved. But
+        # render_inline() actually consumes those delimiters into <em> tags
+        # around the still-blank code span, so a leading "*` `*"-only
+        # paragraph used to win the "first paragraph" slot with
+        # _summary("*` `*\n\nReal text.") returning " " (a lone space)
+        # instead of "Real text.".
+        body = "*` `*\n\nReal text."
         self.assertEqual(build_site._summary(body), "Real text.")
 
     def test_mid_body_paragraph_that_is_only_a_blank_code_span_does_not_win_over_the_real_first_paragraph(self):

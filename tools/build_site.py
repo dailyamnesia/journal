@@ -655,9 +655,47 @@ def _is_blank_markdown(text):
     blank *and* every code span's own content is blank too, matching what
     the heading actually renders to instead of what its raw source happens
     to contain.
+
+    That still isn't the whole gap, though: a code span whose own content is
+    blank doesn't have to sit bare in the heading -- it can be wrapped in
+    *italic*/**bold** too, e.g. "## *` `*" or "## **`​`**". The "**"/"*"
+    delimiters around it are visible characters, exactly like a bare code
+    span's own backticks, so simply removing the code-span placeholder from
+    `remainder` above left them behind and `_is_blank(remainder)` reported
+    "**" or "*...*" as non-blank text -- except render_inline() doesn't
+    leave those delimiters as literal text at all: a code-span placeholder
+    is never itself invisible to `_has_invisible_boundary()` (see its own
+    docstring for why -- a stashed code span has to count as a "visible"
+    emphasis boundary so a *real* one, like "*`code`text*", still renders),
+    so the emphasis match succeeds and consumes the "**"/"*" delimiters into
+    <em>/<strong> tags around the still-blank <code> content, leaving
+    nothing a reader or screen reader can perceive at all.
+    render_markdown("## *`​`*\\n") used to produce
+    "<h2><em><code>​</code></em></h2>" -- present in the markup, and not
+    caught by the heading's own `_is_blank_markdown()` check, since that
+    check only ever accounted for a bare code span, not one still wrapped in
+    emphasis markers that go on to consume their own delimiters. Resolving
+    bold/italic the same way `_summary()` does -- via `_bold_strip_replace()`/
+    `_italic_strip_replace()`, the same functions that already correctly
+    leave a match's delimiters literal when `_has_invisible_boundary()`
+    rejects it -- before checking `remainder` for blankness keeps this check
+    in sync with what render_inline() actually consumes.
     """
     stashed, code_spans = _stash_code_spans(text)
-    remainder = _CODE_SPAN_PLACEHOLDER_RE.sub("", stashed)
+    bold_spans = []
+
+    def _stash_bold(match):
+        replacement = _bold_strip_replace(match)
+        if "*" not in replacement:
+            return replacement
+        bold_spans.append(replacement)
+        return f"\x01{len(bold_spans) - 1}\x01"
+
+    resolved = _BOLD_RE.sub(_stash_bold, stashed)
+    resolved = _ITALIC_RE.sub(_italic_strip_replace, resolved)
+    for i, span in enumerate(bold_spans):
+        resolved = resolved.replace(f"\x01{i}\x01", span)
+    remainder = _CODE_SPAN_PLACEHOLDER_RE.sub("", resolved)
     return _is_blank(remainder) and all(_is_blank(span) for span in code_spans)
 
 
