@@ -165,8 +165,25 @@ echo "== checking git state =="
 # Capturing the command's own exit status first, the same guarded-
 # assignment shape already used for the post-count and owner checks below,
 # closes it.
-if ! GIT_STATUS_OUTPUT="$(git status --porcelain)"; then
-  echo "FAILED: could not determine git working tree status (git status --porcelain failed) -- refusing to guess whether the tree is clean." >&2
+# Also missing a `timeout` wrapper, the same gap the block comment above
+# `WORKTREE_ADD_TIMEOUT_S` (further down) describes fixing for `git worktree
+# add` -- and, unlike that one, never called out or fixed here despite being
+# the exact same shape: `git status --porcelain` is a purely local git
+# subprocess (reads the index, stats the working tree), with no timeout of
+# its own, subject to the identical "wedged filesystem" hang risk this file
+# already treats as real for `git worktree remove` and the OLD_POST_COUNT
+# guard's `sudo find` -- an NFS/FUSE stall or any other syscall-blocking
+# filesystem hiccup underneath `.git` or the working tree wedges this
+# script right here, still holding $LOCKFILE, with no FAILED message and no
+# other symptom, identical in shape to every other now-fixed hang in this
+# file. Reproduced directly: a stand-in `git` on PATH that hangs only for
+# `status`/`rev-parse` (every other subcommand passed through to the real
+# binary), run through this exact line, hung indefinitely (confirmed via an
+# external `timeout`, since the line itself had no protection of its own).
+# 60s matches the bound already used for `git fetch` just below, for the
+# same class of call.
+if ! GIT_STATUS_OUTPUT="$(timeout 60 git status --porcelain)"; then
+  echo "FAILED: could not determine git working tree status (git status --porcelain failed or did not finish within 60s) -- refusing to guess whether the tree is clean." >&2
   exit 1
 fi
 if [ -n "$GIT_STATUS_OUTPUT" ]; then
@@ -194,8 +211,26 @@ if ! timeout 60 git fetch origin main --quiet; then
   echo "FAILED: git fetch origin main did not finish within 60s (or failed) -- a hung or unresponsive remote would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
-LOCAL_REV="$(git rev-parse HEAD)"
-REMOTE_REV="$(git rev-parse origin/main)"
+# Same unwrapped-local-git-call gap as `git status --porcelain` above, same
+# fix: both of these run right after a real network `git fetch` that's
+# already timeout-wrapped, but neither touches the network itself -- they
+# only resolve refs out of the local `.git` this process already has open,
+# so they're subject to the identical local-filesystem hang risk, not the
+# network one. Left as plain assignments, a hang here is silently
+# indistinguishable from every other now-fixed hang in this file: still
+# holding $LOCKFILE, no FAILED message, no other symptom. Reproduced
+# directly with the same stand-in `git` described above (hangs only for
+# `status`/`rev-parse`): both lines hung indefinitely, confirmed only by an
+# external `timeout`. Guarded assignment + `timeout 60`, the same shape and
+# bound as the fix just above, closes it for both.
+if ! LOCAL_REV="$(timeout 60 git rev-parse HEAD)"; then
+  echo "FAILED: git rev-parse HEAD did not finish within 60s (or failed) -- a hung or wedged local git subprocess would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
+if ! REMOTE_REV="$(timeout 60 git rev-parse origin/main)"; then
+  echo "FAILED: git rev-parse origin/main did not finish within 60s (or failed) -- a hung or wedged local git subprocess would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 if [ "$LOCAL_REV" != "$REMOTE_REV" ]; then
   echo "FAILED: local main ($LOCAL_REV) and origin/main ($REMOTE_REV) don't match — push (or pull) before deploying." >&2
   exit 1
