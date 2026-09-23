@@ -718,7 +718,19 @@ chmod 755 "$BUILD_DIR/posts"
 # $BUILD_DIR to 644 here, after the build has written all of them and
 # before any rsync pass runs, closes it the same way those two did for
 # their own directories.
-find "$BUILD_DIR" -type f -exec chmod 644 {} +
+#
+# This call itself was missing the same `timeout` wrapper its sibling below
+# (NEW_POST_COUNT's `find "$BUILD_DIR/posts" -name '*.html'`) already has --
+# $BUILD_DIR is an ordinary `mktemp -d` directory, not guaranteed to sit on
+# fast local storage (TMPDIR can point anywhere), and this `find` walks that
+# same tree, just over every file rather than only posts/*.html. Left
+# unwrapped, a wedged filesystem here hung the whole deploy indefinitely,
+# still holding $LOCKFILE, with no FAILED message -- confirmed directly via a
+# stand-in `find` on PATH that hangs only for this exact invocation shape.
+if ! timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +; then
+  echo "FAILED: could not normalize file modes under $BUILD_DIR (find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
+  exit 1
+fi
 
 # No post has ever been removed in this project's history, so a build with
 # fewer post pages than what's already live is a strong signal of a broken
