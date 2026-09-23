@@ -1758,4 +1758,9 @@ def _resolve_output_dir(argv):
 
 
 if __name__ == "__main__":
-    build(_resolve_output_dir(sys.argv))
+    _out_dir = _resolve_output_dir(sys.argv)
+    try:
+        build(_out_dir)
+    except OSError as e:
+        sys.stderr.write(f"build_site.py: {e}\n")
+        sys.exit(1)

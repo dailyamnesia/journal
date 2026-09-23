@@ -2617,6 +2617,28 @@ class TestResolveOutputDir(unittest.TestCase):
         self.assertNotEqual(cm.exception.code, 0)
         self.assertIn("blank", stderr.getvalue())
 
+    def test_output_dir_that_is_an_existing_plain_file_errors_cleanly(self):
+        # `_resolve_output_dir` only validates the argument's own shape
+        # (blank, "-"-prefixed, too many args) -- it has no way to know
+        # whether the string names something that already exists on disk
+        # as a plain file, not a directory. That case reached `build()`'s
+        # `(out_dir / "posts").mkdir(...)` unguarded and crashed with a raw
+        # `NotADirectoryError` traceback exposing the real temp path,
+        # instead of the clean one-line error every other bad-argument
+        # shape here already gets. Exercises the real `__main__` block via
+        # subprocess since that's the only thing this reaches.
+        with tempfile.TemporaryDirectory() as d:
+            existing_file = Path(d) / "not_a_dir"
+            existing_file.write_text("not a directory\n", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "tools" / "build_site.py"), str(existing_file)],
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("build_site.py:", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
