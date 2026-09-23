@@ -87,10 +87,18 @@ LOCKFILE=/tmp/dailyamnesia-deploy.lock
 # a failure silently read as "false", closes it: re-running the identical
 # repro with this fix in place correctly reported the real cause (`ps`
 # itself failed) instead of the misleading "already running" message.
+# Also unwrapped in a `timeout`, unlike every other blocking call in this
+# file -- this only runs once DAILYAMNESIA_DEPLOY_LOCKED=1 (see the `||`
+# short-circuit at its call site), i.e. already holding $LOCKFILE, so a `ps`
+# that hangs (a wedged /proc, an unresponsive NSS backend) wedges the whole
+# deploy right here with no FAILED message. Reproduced with a stand-in `ps`
+# on PATH hanging only for "-o comm=": hung indefinitely unwrapped, failed
+# cleanly after the bound once wrapped. 30s matches the bound already used
+# for the sibling `ps -o user=` ownership lookup below.
 parent_is_flock() {
   local comm
-  if ! comm="$(ps -o comm= -p "$PPID" 2>/dev/null)"; then
-    echo "FAILED: could not determine this process's own parent command via ps -- refusing to guess whether the DAILYAMNESIA_DEPLOY_LOCKED sentinel is trustworthy (this would otherwise silently read as 'parent is not flock' and could either run unlocked or falsely reject a legitimate deploy as 'another deploy.sh is already running')." >&2
+  if ! comm="$(timeout 30 ps -o comm= -p "$PPID" 2>/dev/null)"; then
+    echo "FAILED: could not determine this process's own parent command via ps (ps failed or did not finish within 30s) -- refusing to guess whether the DAILYAMNESIA_DEPLOY_LOCKED sentinel is trustworthy (this would otherwise silently read as 'parent is not flock' and could either run unlocked or falsely reject a legitimate deploy as 'another deploy.sh is already running')." >&2
     exit 1
   fi
   [ "$comm" = "flock" ]
@@ -884,8 +892,16 @@ fi
 # already used elsewhere in this script, closes it: re-running the
 # identical repro with this fix in place reported the real cause instead of
 # silently passing.
-if ! SUPERVISOR_PPID="$(ps -o ppid= -p $$ | tr -d ' ')"; then
-  echo "FAILED: could not determine this deploy's own parent process id via ps -- refusing to guess whether the lock-holding supervisor is still alive rather than risk syncing unprotected." >&2
+# Also unwrapped in a `timeout`, unlike every other blocking call in this
+# locked region -- this check exists specifically to catch the lock-holding
+# supervisor dying, so a `ps` that itself hangs wedges the deploy right at
+# the one check meant to guard against exactly this class of problem, still
+# holding $LOCKFILE, with no FAILED message. Reproduced with a stand-in `ps`
+# on PATH hanging only for "-o ppid=": hung indefinitely unwrapped, failed
+# cleanly after the bound once wrapped. 30s matches the bound already used
+# for the sibling `ps -o comm=`/`ps -o user=` lookups elsewhere in this file.
+if ! SUPERVISOR_PPID="$(timeout 30 ps -o ppid= -p $$ | tr -d ' ')"; then
+  echo "FAILED: could not determine this deploy's own parent process id via ps (ps failed or did not finish within 30s) -- refusing to guess whether the lock-holding supervisor is still alive rather than risk syncing unprotected." >&2
   exit 1
 fi
 if [ "$SUPERVISOR_PPID" = "1" ]; then
@@ -1621,8 +1637,20 @@ fi
 # let `set -e` act on silently, killing the script right here with none of
 # this script's own `FAILED:` messages ever printed — the same failure shape
 # the post-count checks were fixed for in session 95.
-if ! owner="$(ps -o user= -p "$pid" | tr -d ' ')"; then
-  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine the owning user of server.js process (pid $pid) afterward; it may have already exited. Investigate directly; no further action is needed to ship this deploy." >&2
+# Also unwrapped in a `timeout` -- the same gap already fixed a few lines up
+# for `systemctl show -p MainPID` in this same post-verify section, never
+# carried to this, its structurally identical sibling one statement later.
+# Resolving a UID to a username via `ps -o user=` calls getpwuid(3), which
+# under an NSS config backed by LDAP/NIS/SSSD (ordinary in production) can
+# block on an unresponsive directory service, not just a local /proc read.
+# Left unwrapped, that wedges this deploy right here, still holding
+# $LOCKFILE, even though the site is already live and verified. Reproduced
+# with a stand-in `ps` on PATH hanging only for "-o user=": hung
+# indefinitely unwrapped, failed cleanly after the bound once wrapped. 30s
+# matches the bound already used for the sibling `is-active`/`show`
+# diagnostic calls in this same section.
+if ! owner="$(timeout 30 ps -o user= -p "$pid" | tr -d ' ')"; then
+  echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine the owning user of server.js process (pid $pid) afterward (ps failed or did not finish within 30s); it may have already exited. Investigate directly; no further action is needed to ship this deploy." >&2
   exit "$POST_VERIFY_SANITY_FAILED"
 fi
 if [ "$owner" != "webapp" ]; then
