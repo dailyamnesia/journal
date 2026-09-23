@@ -150,7 +150,24 @@ def _first_commit_time(path):
         )
         lines = result.stdout.strip().splitlines()
         value = lines[-1] if lines else UNCOMMITTED_SENTINEL
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, OSError):
+        # FileNotFoundError (no `git` on PATH at all) was the only OSError
+        # subtype ever caught here, mirroring the same too-narrow gap
+        # parse_post()/parse_charter() each had for their own single
+        # `read_text()` call before a prior session widened both to catch
+        # the whole OSError family -- this subprocess.run() is a third,
+        # independent call site with the identical shape and was never
+        # updated alongside them. A `git` resolved on PATH that isn't
+        # executable (a permissions slip, or a stale/corrupted binary left
+        # over from an interrupted package upgrade) makes subprocess.run()
+        # raise PermissionError instead -- an OSError subtype, but not a
+        # FileNotFoundError -- which used to propagate straight out of this
+        # function and crash the entire site build over what every other
+        # git-unavailable case here already degrades gracefully from:
+        # falling back to UNCOMMITTED_SENTINEL so same-date posts still sort
+        # (newest-first) instead of the build failing outright. Catching the
+        # whole OSError family, the same fix already applied to this
+        # function's two siblings, closes the same gap here.
         value = UNCOMMITTED_SENTINEL
     _first_commit_time_cache[cache_key] = value
     return value

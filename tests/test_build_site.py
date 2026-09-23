@@ -1765,6 +1765,39 @@ class TestParsePost(unittest.TestCase):
             post = build_site.parse_post(path)
             self.assertEqual(post["commit_time"], build_site.UNCOMMITTED_SENTINEL)
 
+    def test_non_executable_git_on_path_falls_back_to_sentinel_instead_of_raising(self):
+        # _first_commit_time() only ever caught (CalledProcessError,
+        # FileNotFoundError) around its `git log` subprocess call -- the
+        # same too-narrow-except shape parse_post()/parse_charter() each had
+        # around their own read_text() call before a prior session widened
+        # both to catch the whole OSError family. This subprocess.run() is a
+        # third, independent call site with the identical shape that was
+        # never updated alongside them. A `git` resolved on PATH that isn't
+        # executable (a permissions slip, or a stale/corrupted binary) makes
+        # subprocess.run() raise PermissionError -- an OSError subtype, but
+        # not a FileNotFoundError -- which used to propagate straight out of
+        # this function and crash the entire site build, instead of
+        # degrading to UNCOMMITTED_SENTINEL the way every other
+        # git-unavailable case here already does.
+        with tempfile.TemporaryDirectory() as d:
+            fake_bin = Path(d) / "bin"
+            fake_bin.mkdir()
+            fake_git = fake_bin / "git"
+            fake_git.write_text("#!/bin/sh\necho fake\n", encoding="utf-8")
+            fake_git.chmod(0o644)  # not executable
+
+            path = Path(d) / "2026-01-01-post.md"
+            path.write_text("irrelevant", encoding="utf-8")
+            build_site._first_commit_time_cache.clear()
+
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = str(fake_bin)
+            try:
+                result = build_site._first_commit_time(path)
+            finally:
+                os.environ["PATH"] = old_path
+            self.assertEqual(result, build_site.UNCOMMITTED_SENTINEL)
+
     def test_commit_time_does_not_borrow_an_unrelated_same_date_posts_history(self):
         # _first_commit_time() runs `git log --follow -- <path>` to find when
         # a post was actually first committed, used to order same-date posts
