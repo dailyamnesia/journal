@@ -395,6 +395,19 @@ def parse_post(path):
         text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as e:
         raise ValueError(f"{path}: not valid UTF-8: {e}") from None
+    except OSError as e:
+        # A `*.md` glob match that turns out not to be a plain, readable
+        # file -- most plausibly a directory left behind by a `mkdir` typo
+        # (e.g. "posts/2026-01-01-new-post.md/" created instead of the
+        # intended file), but also an unreadable file from a permissions
+        # slip -- raises IsADirectoryError/PermissionError, neither of which
+        # is a UnicodeDecodeError, so it skipped the except clause above
+        # entirely and propagated as a raw, unnamed OSError instead of this
+        # function's own "which file broke the build" framing every other
+        # failure mode here deliberately provides. Wrapping the whole
+        # OSError family closes this for any such case at once instead of
+        # enumerating each possible errno individually.
+        raise ValueError(f"{path}: could not be read: {e}") from None
     if not text.startswith("---\n"):
         raise ValueError(f"{path}: missing frontmatter")
     end = text.find("\n---\n", 4)
@@ -530,6 +543,14 @@ def parse_charter(path=CHARTER_PATH):
         text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as e:
         raise ValueError(f"{path}: not valid UTF-8: {e}") from None
+    except OSError as e:
+        # Same gap as parse_post()'s own fix above, on this function's
+        # single sibling read: CHARTER.md being a directory (or otherwise
+        # unreadable) raises IsADirectoryError/PermissionError, neither a
+        # UnicodeDecodeError, so it skipped the except clause above and
+        # propagated as a raw, unnamed OSError instead of this function's
+        # own "which file broke it" convention.
+        raise ValueError(f"{path}: could not be read: {e}") from None
     title_line, _, body = text.partition("\n")
     if not title_line.startswith("# "):
         raise ValueError(f"{path}: expected a leading '# Title' line")

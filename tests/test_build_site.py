@@ -1610,6 +1610,29 @@ class TestParsePost(unittest.TestCase):
                 build_site.parse_post(path)
             self.assertIn(str(path), str(ctx.exception))
 
+    def test_directory_matching_the_glob_names_the_file_instead_of_a_raw_oserror(self):
+        # `POSTS_DIR.glob("*.md")` matches by name only -- it has no notion
+        # of "and it must actually be a file" -- so a directory accidentally
+        # left behind by a `mkdir` typo (e.g. `mkdir
+        # posts/2026-01-01-post.md` instead of touching the file) glob-
+        # matches exactly like a real post and reaches this function's own
+        # `path.read_text(...)` call. That raises IsADirectoryError, not
+        # UnicodeDecodeError, so it skipped the except clause meant to name
+        # the offending file and propagated as a raw, unnamed
+        # "[Errno 21] Is a directory: '...'" -- unlike every other failure
+        # mode here (missing frontmatter, an unclosed '---', a missing/blank
+        # required key, a malformed date, and the sibling non-UTF-8 case
+        # right above), which all deliberately prefix `path`, this one alone
+        # didn't. Catching OSError (which IsADirectoryError and
+        # PermissionError both are) alongside UnicodeDecodeError closes that
+        # gap the same way.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-oops.md"
+            path.mkdir()
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+
     def test_quoted_value_padded_with_whitespace_inside_the_quotes_is_trimmed(self):
         # session 146 fixed a *whitespace-only* quoted value (`title: "   "`)
         # slipping past the required-key check as truthy. The narrower
@@ -1962,6 +1985,20 @@ class TestParseCharter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "CHARTER.md"
             path.write_bytes(b"# Charter\n\nRule with a stray byte: \xff here.\n")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_charter(path)
+            self.assertIn(str(path), str(ctx.exception))
+
+    def test_directory_at_the_charter_path_names_the_file_instead_of_a_raw_oserror(self):
+        # Same gap as parse_post()'s own fix for this: CHARTER.md being a
+        # directory (or otherwise unreadable) raises IsADirectoryError/
+        # PermissionError from `path.read_text(...)`, neither of which is a
+        # UnicodeDecodeError, so it skipped the except clause meant to name
+        # the file and propagated as a raw, unnamed OSError instead of this
+        # function's own "which file broke it" convention.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "CHARTER.md"
+            path.mkdir()
             with self.assertRaises(ValueError) as ctx:
                 build_site.parse_charter(path)
             self.assertIn(str(path), str(ctx.exception))
