@@ -429,7 +429,26 @@ def parse_post(path):
         raise ValueError(f"{path}: missing frontmatter")
     end = text.find("\n---\n", 4)
     if end == -1:
-        raise ValueError(f"{path}: frontmatter opened with '---' but never closed")
+        # The ordinary case above requires the closing "---" to be followed
+        # by a "\n" -- true for every post that has a body (that trailing
+        # newline separates the delimiter from the body's own first line)
+        # and even for a body-less post saved with a trailing newline after
+        # the closing delimiter (text[end+5:] then comes out "", a
+        # legitimate empty-body post). But a body-less post whose file
+        # doesn't end in a trailing newline at all -- e.g. one written by a
+        # script or `echo -n` that never appends one -- has the closing
+        # "---" as the literal last four bytes of the file, with no "\n"
+        # anywhere after it for that find() to match, even though both
+        # delimiters are present and correctly formed. Recognizing this
+        # remaining shape of a valid close (closing delimiter as the last
+        # thing in the file, body implicitly empty) keeps this check
+        # consistent with the fact that a trailing newline after the
+        # closing delimiter was never required for the with-body case above
+        # either.
+        if text.endswith("\n---"):
+            end = len(text) - 4
+        else:
+            raise ValueError(f"{path}: frontmatter opened with '---' but never closed")
     frontmatter, body = text[4:end], text[end + 5:]
     meta = {}
     for line in frontmatter.splitlines():

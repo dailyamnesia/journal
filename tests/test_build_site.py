@@ -1267,6 +1267,19 @@ class TestParsePost(unittest.TestCase):
             self.assertIn(str(path), str(ctx.exception))
             self.assertIn("never closed", str(ctx.exception))
 
+    def test_closing_delimiter_with_no_trailing_newline_and_no_body_still_parses(self):
+        # A body-less post whose file ends exactly at the closing "---",
+        # with no trailing newline after it, used to raise the same "never
+        # closed" error as a genuinely unterminated frontmatter block --
+        # both delimiters were present and correctly formed, but the close
+        # check required a "\n" right after the closing "---" to match.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-stub.md"
+            path.write_bytes('---\ntitle: "Stub"\ndate: 2026-01-01\n---'.encode("utf-8"))
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "Stub")
+            self.assertEqual(post["body"], "")
+
     def test_missing_required_key_names_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "bad.md"
