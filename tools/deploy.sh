@@ -369,7 +369,60 @@ cleanup() {
   # this same ignore-trap and rerunning the identical TERM-then-HUP timing
   # let cleanup run to completion every time.
   trap '' TERM INT HUP QUIT
+  # The plain `wait` this used to be has no bound of its own -- it's a bash
+  # builtin, so `timeout` can't wrap it the way every other blocking call in
+  # this file already is. If the TERM sent below doesn't actually make every
+  # child exit -- one that traps/ignores TERM itself, or one stuck in
+  # uninterruptible D-state I/O under a wedged filesystem beneath `sudo
+  # rsync`/`sudo cp`, the same threat model this file already treats as real
+  # elsewhere -- a bare `wait` blocks forever. Worse than any other hang in
+  # this file: `trap '' TERM INT HUP QUIT` just above has already disarmed an
+  # operator's own Ctrl-C/kill/dropped-SSH-HUP, so nothing short of an
+  # external SIGKILL aimed at this exact process could ever free it, and
+  # nothing in the script itself ever attempted one -- leaving $LOCKFILE held
+  # forever, silently blocking every future deploy. Reproduced directly: a
+  # scratch harness matching this exact trap+pkill+wait shape, with one
+  # backgrounded child that traps and ignores TERM, hung indefinitely -- an
+  # external `timeout -k 3 8` had to step in, and "cleanup finished" (the
+  # function's own last line) never printed; the identical harness with a
+  # TERM-honoring child finished in well under a second.
+  #
+  # Fixed by polling instead of blocking. `jobs -p`, captured right here
+  # before `pkill` runs, gives the exact child PIDs to watch (confirmed this
+  # includes a still-running *foreground* child too, e.g. the sudo rsync this
+  # function already worries about, not only children backgrounded with `&`).
+  # Each is polled with `kill -0` for up to $SYNC_TIMEOUT_S, the same bound
+  # already used for every other sudo/filesystem call in this script; only
+  # once every one of them is confirmed dead does `wait` run, at which point
+  # it can't block at all. Hitting the bound instead escalates to SIGKILL and
+  # gives up waiting further -- deliberately never falling through to a
+  # blocking `wait` on a child that still won't die, since that would just
+  # reintroduce the identical unbounded hang for the one case (a truly wedged
+  # D-state child) no signal, including SIGKILL, can free until the
+  # underlying syscall itself returns; that residual child is left for init
+  # to reap, the same as any other orphan, while this deploy still exits and
+  # releases its lock. Re-running the identical stuck-child repro with this
+  # fix in place printed the warning below and returned within the bound
+  # instead of hanging; the TERM-honoring case was unaffected.
+  local cleanup_children
+  cleanup_children="$(jobs -p)"
   pkill -TERM -P $$ 2>/dev/null || true
+  if [ -n "$cleanup_children" ]; then
+    local cleanup_wait_deadline cleanup_pid cleanup_still_running
+    cleanup_wait_deadline=$(( $(date +%s) + SYNC_TIMEOUT_S ))
+    cleanup_still_running=1
+    while [ "$cleanup_still_running" -eq 1 ] && [ "$(date +%s)" -lt "$cleanup_wait_deadline" ]; do
+      cleanup_still_running=0
+      for cleanup_pid in $cleanup_children; do
+        kill -0 "$cleanup_pid" 2>/dev/null && cleanup_still_running=1
+      done
+      [ "$cleanup_still_running" -eq 1 ] && sleep 1
+    done
+    if [ "$cleanup_still_running" -eq 1 ]; then
+      echo "WARNING: cleanup's own children did not exit within ${SYNC_TIMEOUT_S}s of SIGTERM -- escalating to SIGKILL and moving on without waiting further (a child stuck in uninterruptible D-state I/O can't be freed by any signal, including this one, until the underlying syscall itself returns; this deploy still exits and releases its lock either way)." >&2
+      pkill -KILL -P $$ 2>/dev/null || true
+    fi
+  fi
   wait 2>/dev/null || true
   # This was the one remaining external/blocking call in the whole file left
   # unwrapped by `timeout` (session 250). The comment above `trap cleanup EXIT`
