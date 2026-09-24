@@ -888,11 +888,47 @@ fi
 # $SYNC_TIMEOUT_S instead of hanging, while a real sudo against a real
 # existing (or genuinely first-deploy, not-yet-existing) posts/ directory
 # still reaches the same OLD_POST_COUNT as before, unaffected.
+# `sudo -n true` above only confirms sudo can run *something* right now; it
+# says nothing about whether the specific `test` binary is itself permitted.
+# A real, security-conscious sudoers file whitelists specific commands
+# (rsync/cp/chmod/chown/mv/mkdir/find/systemctl -- the same list the sudo-
+# diff-ambiguity comment further down already names as "the commands whoever
+# wrote the sudoers file was thinking of") and `test` is exactly as easy to
+# leave off that list as `diff` was over there -- it doesn't look like one of
+# the "real" deploy commands either. A `sudo test -d` denied for that reason
+# exits 1 with sudo's own "not allowed to execute" message on stderr and
+# nothing on stdout -- indistinguishable, by exit code alone, from `test -d`
+# on a directory that genuinely doesn't exist yet (also exit 1, also silent).
+# The code as originally written here trusted any nonzero exit as "doesn't
+# exist yet, real first deploy," which folds a genuine sudoers gap into the
+# same OLD_POST_COUNT=0 default used for a real first deploy -- silently
+# defeating the whole guard this block exists for: a broken build (e.g. a
+# glob resolving empty) then compares its 0 pages against a wrongly-0 "old"
+# count instead of the real live one, passes, and lets the rsync
+# --delete-delay passes below wipe out every live post. Reproduced directly:
+# a scratch $LIVE_PUBLIC/posts with 3 real live post pages, a broken build
+# with 0, and a stand-in `sudo` that answers `-n true` and every other real
+# command normally but denies `test` specifically (modeling exactly this
+# sudoers gap) — the guard read OLD_POST_COUNT=0 and passed straight through
+# instead of refusing. Fixed the same way the sudo-diff ambiguity below
+# already is: capture `sudo test -d`'s own stderr (redirecting its stdout,
+# which `test` never writes to anyway, out of the way first) and only trust
+# a nonzero exit as "genuinely doesn't exist" when stderr came back empty;
+# nonzero with nonempty stderr now fails loudly instead of silently
+# defaulting to 0. Re-running the identical repro with this fix in place
+# correctly refused instead of passing; re-running the genuine-first-deploy
+# (directory truly absent, real working sudo) and genuine-ongoing-deploy
+# (directory present, real working sudo) cases through the same fixed logic
+# still reached OLD_POST_COUNT=0 and the real live count respectively,
+# unaffected.
 OLD_POST_COUNT=0
 dir_status=0
-timeout "$SYNC_TIMEOUT_S" sudo test -d "$LIVE_PUBLIC/posts" || dir_status=$?
+DIR_TEST_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -d "$LIVE_PUBLIC/posts" 2>&1 >/dev/null)" || dir_status=$?
 if [ "$dir_status" -eq 124 ]; then
   echo "FAILED: 'sudo test -d $LIVE_PUBLIC/posts' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+elif [ "$dir_status" -ne 0 ] && [ -n "$DIR_TEST_STDERR" ]; then
+  echo "FAILED: could not reliably determine whether $LIVE_PUBLIC/posts exists (sudo test -d exited $dir_status with unexpected stderr: $DIR_TEST_STDERR) -- refusing to guess whether posts are currently live rather than risk a broken build silently wiping them out via rsync --delete-delay." >&2
   exit 1
 elif [ "$dir_status" -eq 0 ]; then
   if ! OLD_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
@@ -1436,6 +1472,35 @@ SERVER_CHANGED=false
 # genuine-difference, genuinely-identical, and sudo-denies-diff cases
 # through the same fixed logic still reached "changed", "unchanged", and
 # "FAILED: could not reliably compare" respectively, unaffected.
+#
+# That "sudo's own health was already confirmed once ... so a `sudo test -e`
+# returning false here can be trusted" reasoning doesn't actually hold,
+# though -- `sudo -n true` only confirms sudo can run *something*, never that
+# the specific `test` binary is itself whitelisted. A real sudoers file that
+# whitelists specific commands (the same setup the "unexpected stderr" branch
+# just below already exists to handle for `diff`) is exactly as likely to
+# leave `test` off that list as it is `diff` -- neither looks like one of the
+# "real" deploy commands. A `sudo test -e` denied for that reason exits
+# nonzero with sudo's own "not allowed to execute" message on stderr, which
+# this block used to fold into `test_status -ne 0` -> `diff_status=1` ->
+# "changed, deploying" exactly the same as a genuinely-missing file --
+# meaning a sudoers gap here makes the script conclude server.js changed
+# and restart the live service on *every single deploy forever*, never
+# reaching the diff-ambiguity check below at all, since that check is only
+# ever reached when `test -e` reports true. Reproduced directly: two
+# byte-identical copies of server.js, with a stand-in `sudo` that answers
+# `-n true` and every other real command normally but denies `test`
+# specifically, made this exact `sudo test -e` line read "missing" and
+# conclude "changed" even though nothing about server.js differed at all.
+# Fixed the same way as OLD_POST_COUNT's sibling `sudo test -d` above:
+# capture `test -e`'s own stderr and only trust a nonzero exit as
+# "genuinely missing" when stderr came back empty; nonzero with nonempty
+# stderr now fails loudly instead of silently reading as "changed."
+# Re-running the identical repro with this fix in place correctly reported
+# "could not reliably determine" instead of falsely concluding "changed";
+# re-running the genuine-first-deploy (file truly absent, real working sudo)
+# case through the same fixed logic still correctly took the "changed"
+# branch, unaffected.
 diff_status=0
 test_status=0
 # Not routed through run_synced above: its own "genuinely missing" (exit
@@ -1444,9 +1509,12 @@ test_status=0
 # blanket "any nonzero means FAILED" would misread a real first deploy
 # (server.js not live yet) as a hang. `timeout`'s own exit 124 is checked
 # for explicitly instead, the one outcome that's unambiguously a hang.
-timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" || test_status=$?
+TEST_EXISTS_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" 2>&1 >/dev/null)" || test_status=$?
 if [ "$test_status" -eq 124 ]; then
   echo "FAILED: 'sudo test -e $LIVE_SERVER' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+elif [ "$test_status" -ne 0 ] && [ -n "$TEST_EXISTS_STDERR" ]; then
+  echo "FAILED: could not reliably determine whether $LIVE_SERVER exists (sudo test -e exited $test_status with unexpected stderr: $TEST_EXISTS_STDERR) -- refusing to guess whether server.js changed, rather than risk either silently redeploying+restarting on every run or silently skipping a real change." >&2
   exit 1
 elif [ "$test_status" -ne 0 ]; then
   diff_status=1
