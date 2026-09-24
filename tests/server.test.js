@@ -28,6 +28,36 @@ function makeSiblingDir(t, dir) {
   return sibling;
 }
 
+// The four TOCTOU tests below race a real separate OS process against the
+// server, continuously rewriting files/symlinks inside `dir` with no delay
+// between iterations. A plain `swapper.kill()` only sends SIGTERM -- it
+// doesn't wait for the process to actually die -- so a later `t.after()`
+// cleanup step (e.g. makePublicDir's own `fs.rmSync(dir, ...)`) can still
+// race against that process's last in-flight write and leave a file/symlink
+// behind. Registering this as the *last* t.after in each test (t.after runs
+// LIFO, so this runs before any earlier-registered dir removal) guarantees
+// the racer is genuinely gone, via SIGKILL (which no signal handler can
+// defer) plus actually waiting for 'exit', before any cleanup that touches
+// its target directory runs.
+function killAndWait(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    // SIGKILL on Linux is effectively instant, but this is a cleanup hook,
+    // not the thing under test -- fall back to resolving anyway after a
+    // generous bound rather than risk hanging the whole suite indefinitely
+    // on some unforeseen case where 'exit' never fires.
+    const fallback = setTimeout(resolve, 5000);
+    child.once('exit', () => {
+      clearTimeout(fallback);
+      resolve();
+    });
+    child.kill('SIGKILL');
+  });
+}
+
 test('resolveRequestPath: root maps to index.html', (t) => {
   const dir = makePublicDir(t);
   assert.equal(resolveRequestPath('/', dir), path.join(dir, 'index.html'));
@@ -545,7 +575,7 @@ test('server: a symlink swapped mid-request cannot bypass the realpath containme
     }
   `;
   const swapper = spawn(process.execPath, ['-e', swapperScript]);
-  t.after(() => swapper.kill());
+  t.after(() => killAndWait(swapper));
 
   // Give the swapper a moment to actually start racing before we pile on
   // requests, and hold it running for the duration of the burst below.
@@ -621,7 +651,7 @@ test('server: the resolved target itself swapped for a symlink between the conta
     }
   `;
   const swapper = spawn(process.execPath, ['-e', swapperScript]);
-  t.after(() => swapper.kill());
+  t.after(() => killAndWait(swapper));
 
   // Same rationale as the symlink-swap test above: the race needs a
   // genuinely separate OS process, not a same-event-loop loop, to reliably
@@ -687,7 +717,7 @@ test('server: a 404.html swapped for a symlink between the containment check and
     }
   `;
   const swapper = spawn(process.execPath, ['-e', swapperScript]);
-  t.after(() => swapper.kill());
+  t.after(() => killAndWait(swapper));
 
   await new Promise((r) => setTimeout(r, 100));
 
@@ -849,7 +879,7 @@ test('server: a file swapped for a directory mid-request never abandons the resp
     }
   `;
   const swapper = spawn(process.execPath, ['-e', swapperScript]);
-  t.after(() => swapper.kill());
+  t.after(() => killAndWait(swapper));
 
   // Same rationale as the symlink-swap test above: the race needs a
   // genuinely separate OS process, not a same-event-loop loop, to reliably
