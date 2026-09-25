@@ -860,7 +860,40 @@ fi
 # failing) against real live posts now correctly refuses instead of
 # silently defaulting to 0 the way the parent-directory check still would
 # have let through.
-if ! sudo -n true 2>/dev/null; then
+#
+# This call itself was left unwrapped by `timeout`, unlike every other
+# sudo/git/ps/find/systemctl call in this file -- the one remaining gap of
+# that exact shape, and the very first sudo call this script ever makes
+# (see the comment further down that already notes this). `-n`
+# (non-interactive) only suppresses sudo's own interactive password
+# *prompt*; it does nothing to bound the rest of the PAM/NSS machinery
+# sudo runs through to decide whether to even get that far. An ordinary
+# sudoers rule keyed on a group (`%webadmins ALL=(ALL) NOPASSWD: ...`, a
+# completely standard way to write one) has to resolve that group's
+# membership, which, under an NSS config backed by LDAP/NIS/SSSD, can
+# block on an unresponsive directory service -- the identical hang risk
+# this file already treats as real for `ps -o user=`'s getpwuid(3) call
+# further down, just hit one syscall earlier, inside sudo's own
+# authorization check instead of a later ownership lookup. A PAM module
+# invoked during the account/session phase (pam_exec calling out to a
+# remote 2FA/audit service, for instance) can block the same way, `-n` or
+# not. Left unwrapped, a hang here wedges this deploy at the very first
+# sudo call it ever makes, still holding $LOCKFILE, with no FAILED message
+# -- identical in shape to every other now-fixed hang in this file.
+# Reproduced directly: a stand-in `sudo` on PATH that hangs only for the
+# exact "-n true" invocation shape this check uses (modeling exactly this
+# PAM/NSS stall) hung this line indefinitely, confirmed via an external
+# `timeout` since the line itself had no protection of its own; wrapping
+# it in `timeout "$SYNC_TIMEOUT_S"` and checking its exit 124 explicitly
+# failed loudly within the bound instead, while a real healthy sudo and a
+# real denied/no-TTY sudo (the two legitimate outcomes this check already
+# handles) both still reached the same result as before, unaffected.
+sudo_health_status=0
+timeout "$SYNC_TIMEOUT_S" sudo -n true 2>/dev/null || sudo_health_status=$?
+if [ "$sudo_health_status" -eq 124 ]; then
+  echo "FAILED: 'sudo -n true' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call (e.g. a sudoers group rule or PAM module blocked on an unresponsive directory service) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+elif [ "$sudo_health_status" -ne 0 ]; then
   echo "FAILED: sudo is not usable non-interactively right now (expired/missing credentials, no controlling TTY, or similar) — refusing to guess whether posts are currently live rather than risk silently treating a real deploy as a first deploy." >&2
   exit 1
 fi
