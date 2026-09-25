@@ -280,7 +280,26 @@ fi
 # creating the worktree left the worktree's own file untouched. BUILD_SRC is
 # set up alongside BUILD_DIR's own cleanup below, since both are temp
 # directories/worktrees this script owns for the rest of its run.
-BUILD_SRC="$(mktemp -d)"
+# `mktemp -d` itself was left unwrapped by `timeout`, unlike every other
+# blocking call in this file (git, rsync, sudo, systemctl, ps, find) -- it
+# still has to create a directory under TMPDIR, which "can point anywhere"
+# (the same phrase this file's own NEW_POST_COUNT/chmod comments already use
+# to justify wrapping `find`/`chmod` against $BUILD_DIR), so a wedged
+# filesystem underneath it (NFS, FUSE, a stalled disk) blocks it exactly like
+# every other now-fixed hang here. Left unwrapped, that wedges this deploy
+# right at its very first temp path, still holding $LOCKFILE, with no FAILED
+# message. Reproduced directly: a stand-in `mktemp` on PATH that hangs
+# unconditionally, run through this exact `BUILD_SRC="$(mktemp -d)"` line
+# unmodified, hung indefinitely (confirmed via an external `timeout`, since
+# the line itself had no protection); wrapping it in `timeout
+# "$SYNC_TIMEOUT_S"` and guarding the assignment the same way every other
+# command substitution in this file already is, failed loudly within the
+# bound instead. $SYNC_TIMEOUT_S is already defined above (before this line)
+# for exactly this kind of shared use.
+if ! BUILD_SRC="$(timeout "$SYNC_TIMEOUT_S" mktemp -d)"; then
+  echo "FAILED: could not create a temp directory for the build-source worktree (mktemp -d failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 BUILD_DIR=""
 # Tracks whichever root-owned staged path (created via sudo, outside this
 # script's own unprivileged cleanup reach) is currently in flight -- set
@@ -662,7 +681,17 @@ if ! timeout 300 node --test "$NODE_TEST_FILE"; then
   exit 1
 fi
 
-BUILD_DIR="$(mktemp -d)"
+# Same unwrapped-`mktemp` gap as $BUILD_SRC above, same fix: this is a
+# second, independent temp directory under the same TMPDIR, subject to the
+# identical wedged-filesystem hang risk. Reproduced directly the same way:
+# a stand-in `mktemp` on PATH that hangs unconditionally, run through this
+# exact line unmodified, hung indefinitely under an external `timeout`;
+# wrapping it in `timeout "$SYNC_TIMEOUT_S"` and guarding the assignment
+# failed loudly within the bound instead.
+if ! BUILD_DIR="$(timeout "$SYNC_TIMEOUT_S" mktemp -d)"; then
+  echo "FAILED: could not create a temp directory for the build output (mktemp -d failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 # mktemp -d always creates its directory mode 0700 (rwx------), regardless of
 # this shell's own umask -- build_site.py never chmods $BUILD_DIR itself (it
 # only ever creates the "posts" subdirectory under it and writes files
@@ -1552,7 +1581,20 @@ elif [ "$test_status" -ne 0 ] && [ -n "$TEST_EXISTS_STDERR" ]; then
 elif [ "$test_status" -ne 0 ]; then
   diff_status=1
 else
-  DIFF_STDERR="$(mktemp)"
+  # Same unwrapped-`mktemp` gap as $BUILD_SRC/$BUILD_DIR above, same fix: a
+  # plain, unprivileged `mktemp` file used only to capture `sudo diff`'s
+  # stderr, subject to the identical wedged-TMPDIR hang risk. Left unwrapped,
+  # this would wedge the deploy right here, after both test suites and the
+  # sync passes have already run, still holding $LOCKFILE. Reproduced
+  # directly the same way as $BUILD_SRC/$BUILD_DIR: a stand-in `mktemp` on
+  # PATH that hangs unconditionally, run through this exact line unmodified,
+  # hung indefinitely under an external `timeout`; wrapping it in
+  # `timeout "$SYNC_TIMEOUT_S"` and guarding the assignment failed loudly
+  # within the bound instead.
+  if ! DIFF_STDERR="$(timeout "$SYNC_TIMEOUT_S" mktemp)"; then
+    echo "FAILED: could not create a temp file to capture 'sudo diff' stderr (mktemp failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+    exit 1
+  fi
   timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
   DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
   rm -f "$DIFF_STDERR"

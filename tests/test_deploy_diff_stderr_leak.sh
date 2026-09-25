@@ -41,7 +41,11 @@ if [ -z "$CLEANUP_SRC" ]; then
   exit 1
 fi
 
-MKTEMP_LINE="$(get_line '  DIFF_STDERR="$(mktemp)"')"
+MKTEMP_LINE="$(awk '/^  if ! DIFF_STDERR=/,/^  fi$/' "$DEPLOY_SH")"
+if [ -z "$MKTEMP_LINE" ]; then
+  echo "FAIL: could not find the 'if ! DIFF_STDERR=...mktemp...fi' block in $DEPLOY_SH -- has it been renamed, restructured, or removed?" >&2
+  exit 1
+fi
 DIFF_LINE="$(get_line '  timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?')"
 CONTENT_LINE="$(get_line '  DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"')"
 RM_LINE="$(get_line '  rm -f "$DIFF_STDERR"')"
