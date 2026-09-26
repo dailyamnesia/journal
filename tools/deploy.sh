@@ -145,7 +145,7 @@ LIVE_PUBLIC="$LIVE_ROOT/public"
 LIVE_SERVER="$LIVE_ROOT/server.js"
 
 # Defined this early (rather than down by run_synced(), where it originally
-# lived) so the OLD_POST_COUNT guard's own `sudo test -d`/`sudo find` calls
+# lived) so the OLD_POST_COUNT guard's own `sudo test -e`/`sudo grep` calls
 # below can share the same bound -- see the comment at that call site for
 # why they need it too. Overridable via the same env var either way.
 SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"
@@ -931,16 +931,16 @@ fi
 # every sudo call in the sync section, which is exactly why every one of
 # those is wrapped in `timeout`. These next two sudo calls were the one
 # pair left out of that treatment: unlike `sudo -n true`, a plain
-# `sudo test -d`/`sudo find` with no `-n` can still block on a password
+# `sudo test -e`/`sudo grep` with no `-n` can still block on a password
 # prompt nobody is watching to answer if the cached credential expires in
-# the gap right after the health check above, or hang on a stat()/readdir()
-# against a wedged filesystem underneath $LIVE_PUBLIC/posts (NFS, FUSE,
+# the gap right after the health check above, or hang on a stat()/read()
+# against a wedged filesystem underneath $LIVE_PUBLIC (NFS, FUSE,
 # anything else that can block a syscall indefinitely) -- wedging this
 # deploy right here, still holding $LOCKFILE, with no FAILED message and no
 # other symptom, identical in shape to every other now-fixed hang in this
 # file. Reproduced directly: a scratch stand-in `sudo` that answers
 # `-n true` instantly but hangs on anything else, run through this exact
-# unwrapped `sudo test -d` / `sudo find` pair, blocked indefinitely
+# unwrapped `sudo test -e` / `sudo grep` pair, blocked indefinitely
 # (confirmed via an external `timeout`, since the lines themselves had no
 # protection of their own). Wrapping both in `timeout "$SYNC_TIMEOUT_S"`
 # (defined early, above, specifically so it's available here) and checking
@@ -948,7 +948,7 @@ fi
 # `sudo test -e "$LIVE_SERVER"` further down -- closes it: re-running the
 # identical repro with this fix in place failed loudly within
 # $SYNC_TIMEOUT_S instead of hanging, while a real sudo against a real
-# existing (or genuinely first-deploy, not-yet-existing) posts/ directory
+# existing (or genuinely first-deploy, not-yet-existing) index.html
 # still reaches the same OLD_POST_COUNT as before, unaffected.
 # `sudo -n true` above only confirms sudo can run *something* right now; it
 # says nothing about whether the specific `test` binary is itself permitted.
@@ -957,10 +957,10 @@ fi
 # diff-ambiguity comment further down already names as "the commands whoever
 # wrote the sudoers file was thinking of") and `test` is exactly as easy to
 # leave off that list as `diff` was over there -- it doesn't look like one of
-# the "real" deploy commands either. A `sudo test -d` denied for that reason
+# the "real" deploy commands either. A `sudo test -e` denied for that reason
 # exits 1 with sudo's own "not allowed to execute" message on stderr and
-# nothing on stdout -- indistinguishable, by exit code alone, from `test -d`
-# on a directory that genuinely doesn't exist yet (also exit 1, also silent).
+# nothing on stdout -- indistinguishable, by exit code alone, from `test -e`
+# on a file that genuinely doesn't exist yet (also exit 1, also silent).
 # The code as originally written here trusted any nonzero exit as "doesn't
 # exist yet, real first deploy," which folds a genuine sudoers gap into the
 # same OLD_POST_COUNT=0 default used for a real first deploy -- silently
@@ -968,33 +968,70 @@ fi
 # glob resolving empty) then compares its 0 pages against a wrongly-0 "old"
 # count instead of the real live one, passes, and lets the rsync
 # --delete-delay passes below wipe out every live post. Reproduced directly:
-# a scratch $LIVE_PUBLIC/posts with 3 real live post pages, a broken build
+# a scratch $LIVE_PUBLIC/index.html linking 3 real live posts, a broken build
 # with 0, and a stand-in `sudo` that answers `-n true` and every other real
 # command normally but denies `test` specifically (modeling exactly this
 # sudoers gap) — the guard read OLD_POST_COUNT=0 and passed straight through
 # instead of refusing. Fixed the same way the sudo-diff ambiguity below
-# already is: capture `sudo test -d`'s own stderr (redirecting its stdout,
+# already is: capture `sudo test -e`'s own stderr (redirecting its stdout,
 # which `test` never writes to anyway, out of the way first) and only trust
 # a nonzero exit as "genuinely doesn't exist" when stderr came back empty;
 # nonzero with nonempty stderr now fails loudly instead of silently
 # defaulting to 0. Re-running the identical repro with this fix in place
 # correctly refused instead of passing; re-running the genuine-first-deploy
-# (directory truly absent, real working sudo) and genuine-ongoing-deploy
-# (directory present, real working sudo) cases through the same fixed logic
+# (file truly absent, real working sudo) and genuine-ongoing-deploy
+# (file present, real working sudo) cases through the same fixed logic
 # still reached OLD_POST_COUNT=0 and the real live count respectively,
 # unaffected.
+#
+# OLD_POST_COUNT itself is derived from how many posts $LIVE_PUBLIC/
+# index.html actually *links to* (a `<li><a href="posts/...">` entry per
+# post, from the exact loop in build_site.py's render_index that builds the
+# index page's post list), not a raw `find $LIVE_PUBLIC/posts -name
+# '*.html' | wc -l`. build_site.py rewrites index.html in full on every
+# build, so this is always exactly the current, genuinely published post
+# count -- but a raw file count double-counts any stale leftover left in
+# $LIVE_PUBLIC/posts by a *previously interrupted* deploy: the three-pass
+# posts sync below deliberately defers deleting a renamed/removed post's
+# old page until its very last pass (`--delete-delay "$BUILD_DIR/posts/"
+# "$LIVE_PUBLIC/posts/"`), so a process death between the earlier
+# add/update passes and that final delete pass leaves the old page sitting
+# on disk, unlinked from index.html but still present -- the next deploy's
+# guard, comparing NEW_POST_COUNT against that inflated file count, then
+# wrongly reads a perfectly healthy rebuild (producing the exact same
+# *reachable* post set already live) as "fewer posts than currently live"
+# and refuses, requiring a human to intervene by hand even though nothing
+# is actually at risk of being lost. Reproduced directly: a scratch
+# $LIVE_PUBLIC/posts with 4 files (a, b, c, c2 -- c an orphaned pre-rename
+# leftover) but an index.html linking only a/b/c2 (3 posts, matching a
+# fresh, healthy 3-post build) -- the raw-file-count guard read
+# OLD_POST_COUNT=4 and refused a build that would have actually cleaned up
+# the orphan, not lost anything; counting index.html's own links instead
+# reads OLD_POST_COUNT=3 and correctly passes. Confirmed this doesn't
+# weaken the guard's real purpose: a genuinely broken build (0 pages)
+# against the same live index.html still correctly refuses, and a genuine
+# first deploy (index.html doesn't exist yet) still correctly reaches
+# OLD_POST_COUNT=0. One counting gotcha caught before shipping this: the
+# naive `grep -c 'href="posts/'` overcounts by one, since
+# render_start_here()'s "New here?" callout links to the single oldest post
+# a second time, outside the `<li>` post-list loop -- confirmed against a
+# real 264-post build (265 raw `href="posts/` matches, 264 real posts).
+# `<li><a href="posts/` matches only the post-list loop's own emitted
+# markup (the sole call site in build_site.py that emits that exact
+# prefix), so it isn't fooled by that second link.
 OLD_POST_COUNT=0
-dir_status=0
-DIR_TEST_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -d "$LIVE_PUBLIC/posts" 2>&1 >/dev/null)" || dir_status=$?
-if [ "$dir_status" -eq 124 ]; then
-  echo "FAILED: 'sudo test -d $LIVE_PUBLIC/posts' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+index_status=0
+INDEX_TEST_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_PUBLIC/index.html" 2>&1 >/dev/null)" || index_status=$?
+if [ "$index_status" -eq 124 ]; then
+  echo "FAILED: 'sudo test -e $LIVE_PUBLIC/index.html' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
-elif [ "$dir_status" -ne 0 ] && [ -n "$DIR_TEST_STDERR" ]; then
-  echo "FAILED: could not reliably determine whether $LIVE_PUBLIC/posts exists (sudo test -d exited $dir_status with unexpected stderr: $DIR_TEST_STDERR) -- refusing to guess whether posts are currently live rather than risk a broken build silently wiping them out via rsync --delete-delay." >&2
+elif [ "$index_status" -ne 0 ] && [ -n "$INDEX_TEST_STDERR" ]; then
+  echo "FAILED: could not reliably determine whether $LIVE_PUBLIC/index.html exists (sudo test -e exited $index_status with unexpected stderr: $INDEX_TEST_STDERR) -- refusing to guess whether posts are currently live rather than risk a broken build silently wiping them out via rsync --delete-delay." >&2
   exit 1
-elif [ "$dir_status" -eq 0 ]; then
-  if ! OLD_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" sudo find "$LIVE_PUBLIC/posts" -name '*.html' | wc -l)"; then
-    echo "FAILED: could not count post pages currently live in $LIVE_PUBLIC/posts (sudo find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
+elif [ "$index_status" -eq 0 ]; then
+  OLD_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" sudo grep -c '<li><a href="posts/' "$LIVE_PUBLIC/index.html" || true)"
+  if ! [[ "$OLD_POST_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "FAILED: could not count posts linked from $LIVE_PUBLIC/index.html (sudo grep failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
     exit 1
   fi
 fi
@@ -1285,9 +1322,9 @@ run_synced() {
 }
 
 echo "== syncing content to $LIVE_PUBLIC =="
-# The post-count guard above deliberately treats "$LIVE_PUBLIC/posts doesn't
-# exist" as a legitimate, expected state on a genuine first-ever deploy
-# (OLD_POST_COUNT=0, guard passes through) -- but that guard only decides
+# The post-count guard above deliberately treats "$LIVE_PUBLIC/index.html
+# doesn't exist" as a legitimate, expected state on a genuine first-ever
+# deploy (OLD_POST_COUNT=0, guard passes through) -- but that guard only decides
 # whether to proceed, it never actually prepares $LIVE_PUBLIC for the rsync
 # passes below to write into, and rsync itself only ever creates one missing
 # leaf directory component, not a whole missing chain. On a truly fresh host
