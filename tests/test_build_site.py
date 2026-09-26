@@ -1319,6 +1319,33 @@ class TestParsePost(unittest.TestCase):
             self.assertEqual(post["title"], "X")
             self.assertEqual(post["body"], "Body.")
 
+    def test_empty_frontmatter_block_is_recognized_as_closed(self):
+        # An opening "---" line immediately followed by a closing "---"
+        # line, with nothing at all in between, is a degenerate but
+        # perfectly well-formed frontmatter block (zero metadata lines) --
+        # both delimiters are present and correctly shaped. But the close
+        # search only ever started looking *after* the opening delimiter's
+        # own match, and `_FRONTMATTER_CLOSE_RE` requires a leading "\n" of
+        # its own before the closing "---" -- the one and only newline that
+        # could ever serve that role here is the exact one the opening match
+        # already consumed as its own terminator. With no second newline
+        # anywhere before the close, the search came up empty and this
+        # exact shape was misreported as "frontmatter opened with '---' but
+        # never closed" -- the same message a genuinely broken file gets --
+        # even though a human reading "---\n---\nBody\n" would say this
+        # frontmatter is trivially closed. It should instead parse to an
+        # empty `meta` dict and fail on the much more accurate "missing
+        # required key 'title'" a few lines below, the same as any other
+        # frontmatter block that never set a title.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-empty-frontmatter.md"
+            path.write_text("---\n---\nBody text here.\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                build_site.parse_post(path)
+            self.assertIn(str(path), str(ctx.exception))
+            self.assertIn("missing required key", str(ctx.exception))
+            self.assertNotIn("never closed", str(ctx.exception))
+
     def test_missing_required_key_names_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "bad.md"

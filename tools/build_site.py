@@ -439,10 +439,32 @@ def parse_post(path):
     open_match = _FRONTMATTER_OPEN_RE.match(text)
     if not open_match:
         raise ValueError(f"{path}: missing frontmatter")
-    # The close search starts right after the opening delimiter's own match
-    # (not a hardcoded 4), so a body-less file whose *opening* line also
-    # carries trailing whitespace doesn't shift every offset below.
-    close_match = _FRONTMATTER_CLOSE_RE.search(text, open_match.end())
+    # The close search starts one character *before* the end of the opening
+    # delimiter's own match, not right after it: `_FRONTMATTER_CLOSE_RE`
+    # requires a leading "\n" of its own before the closing "---", and
+    # `open_match` already consumed the one newline that terminates the
+    # opening delimiter line. For ordinary frontmatter (at least one
+    # metadata line in between) there's a second, later "\n" right before
+    # the real closing "---" for the regex to find either way, so this
+    # makes no difference. But a post with genuinely *empty* frontmatter --
+    # an opening "---" line immediately followed by a closing "---" line,
+    # with nothing in between at all, e.g. "---\n---\nBody\n" -- has no
+    # second newline: the only one that could ever precede the closing
+    # delimiter is the exact one `open_match` already matched. Starting the
+    # search after it (the old behavior, and a hardcoded `text.find(...,
+    # 4)` before that) meant that single newline could never do double duty
+    # as both the opening line's own terminator and the closing delimiter's
+    # required lead-in, so this shape was misreported as "frontmatter opened
+    # with '---' but never closed" -- even though both delimiters are
+    # present, correctly formed, and adjacent -- instead of parsing to an
+    # empty `meta` dict and failing with the accurate "missing required key
+    # 'title'" a few lines below. Backing the search start up by one
+    # character lets that shared newline serve both roles, exactly as a
+    # human reading "---\n---\nBody\n" would say this frontmatter is (trivially)
+    # closed. `open_match` is guaranteed to match at least "---\n" (4
+    # characters), so `open_match.end() - 1` is always >= 3 -- never
+    # negative.
+    close_match = _FRONTMATTER_CLOSE_RE.search(text, open_match.end() - 1)
     if not close_match:
         # Covers both a genuinely unclosed frontmatter block and a
         # body-less post whose closing "---" is the last real content in
