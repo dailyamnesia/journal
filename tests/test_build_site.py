@@ -1280,6 +1280,45 @@ class TestParsePost(unittest.TestCase):
             self.assertEqual(post["title"], "Stub")
             self.assertEqual(post["body"], "")
 
+    def test_closing_delimiter_with_trailing_whitespace_still_parses(self):
+        # A trailing space or tab on the closing "---" line itself (before
+        # its newline) -- a harmless autosave/copy-paste artifact -- used to
+        # make the exact-match "\n---\n" search miss the real close
+        # entirely, raising the same "never closed" error as a genuinely
+        # unterminated block.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-trailing-ws.md"
+            path.write_bytes(
+                '---\ntitle: "X"\ndate: 2026-01-01\n---  \nBody text here.\n'.encode("utf-8")
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "X")
+            self.assertEqual(post["body"], "Body text here.")
+
+    def test_closing_delimiter_with_trailing_whitespace_and_no_trailing_newline_still_parses(self):
+        # The same trailing-whitespace tolerance above, combined with the
+        # no-trailing-newline body-less shape already covered by
+        # test_closing_delimiter_with_no_trailing_newline_and_no_body_still_parses.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-stub.md"
+            path.write_bytes('---\ntitle: "Stub"\ndate: 2026-01-01\n---\t'.encode("utf-8"))
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "Stub")
+            self.assertEqual(post["body"], "")
+
+    def test_opening_delimiter_with_trailing_whitespace_still_parses(self):
+        # Same tolerance, symmetric side: a trailing space on the very
+        # first "---" line used to fail the exact `startswith("---\n")`
+        # check and get misreported as "missing frontmatter" entirely.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-open-ws.md"
+            path.write_bytes(
+                '---  \ntitle: "X"\ndate: 2026-01-01\n---\nBody.\n'.encode("utf-8")
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], "X")
+            self.assertEqual(post["body"], "Body.")
+
     def test_missing_required_key_names_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "bad.md"

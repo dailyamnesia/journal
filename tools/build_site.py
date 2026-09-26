@@ -383,6 +383,17 @@ def _has_unescaped_closing_quote(value):
     return backslash_run % 2 == 0
 
 
+# A trailing space or tab after the "---" delimiter itself (before the
+# newline, or before end-of-file for a body-less post) is a harmless
+# artifact of plenty of ordinary editing -- a trailing-whitespace autosave
+# quirk, a stray keystroke, a copy-paste from a web page -- and shouldn't
+# by itself make otherwise well-formed frontmatter unparseable. Matched via
+# regex (not a hardcoded-length startswith/find, as parse_post() used
+# before this) so both the open and close checks tolerate it identically.
+_FRONTMATTER_OPEN_RE = re.compile(r"\A---[ \t]*\n")
+_FRONTMATTER_CLOSE_RE = re.compile(r"\n---[ \t]*(?:\n|\Z)")
+
+
 def parse_post(path):
     # UnicodeDecodeError (e.g. a post accidentally saved with Windows-1252
     # smart quotes, or any other stray non-UTF-8 byte) is itself a
@@ -425,31 +436,22 @@ def parse_post(path):
         # OSError family closes this for any such case at once instead of
         # enumerating each possible errno individually.
         raise ValueError(f"{path}: could not be read: {e}") from None
-    if not text.startswith("---\n"):
+    open_match = _FRONTMATTER_OPEN_RE.match(text)
+    if not open_match:
         raise ValueError(f"{path}: missing frontmatter")
-    end = text.find("\n---\n", 4)
-    if end == -1:
-        # The ordinary case above requires the closing "---" to be followed
-        # by a "\n" -- true for every post that has a body (that trailing
-        # newline separates the delimiter from the body's own first line)
-        # and even for a body-less post saved with a trailing newline after
-        # the closing delimiter (text[end+5:] then comes out "", a
-        # legitimate empty-body post). But a body-less post whose file
-        # doesn't end in a trailing newline at all -- e.g. one written by a
-        # script or `echo -n` that never appends one -- has the closing
-        # "---" as the literal last four bytes of the file, with no "\n"
-        # anywhere after it for that find() to match, even though both
-        # delimiters are present and correctly formed. Recognizing this
-        # remaining shape of a valid close (closing delimiter as the last
-        # thing in the file, body implicitly empty) keeps this check
-        # consistent with the fact that a trailing newline after the
-        # closing delimiter was never required for the with-body case above
-        # either.
-        if text.endswith("\n---"):
-            end = len(text) - 4
-        else:
-            raise ValueError(f"{path}: frontmatter opened with '---' but never closed")
-    frontmatter, body = text[4:end], text[end + 5:]
+    # The close search starts right after the opening delimiter's own match
+    # (not a hardcoded 4), so a body-less file whose *opening* line also
+    # carries trailing whitespace doesn't shift every offset below.
+    close_match = _FRONTMATTER_CLOSE_RE.search(text, open_match.end())
+    if not close_match:
+        # Covers both a genuinely unclosed frontmatter block and a
+        # body-less post whose closing "---" is the last real content in
+        # the file with no trailing newline after it -- e.g. one written by
+        # a script or `echo -n` that never appends one -- since
+        # _FRONTMATTER_CLOSE_RE's trailing `\Z` alternative already matches
+        # that shape (with or without trailing whitespace on that line).
+        raise ValueError(f"{path}: frontmatter opened with '---' but never closed")
+    frontmatter, body = text[open_match.end():close_match.start()], text[close_match.end():]
     meta = {}
     for line in frontmatter.splitlines():
         key, _, value = line.partition(":")
