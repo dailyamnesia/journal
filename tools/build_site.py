@@ -362,25 +362,40 @@ def _has_unescaped_closing_quote(value):
     `She said "stop\\` (note the trailing backslash), reaching <title>,
     <h1>, the index link, and the feed entry.
 
-    A closing quote is only "real" if it isn't itself escaped, i.e. the run
-    of backslashes immediately before it has even length (0, 2, 4, ... --
-    each pair is a would-be-escaped backslash followed by an ordinary
-    character, never reaching this quote; this parser has no `\\\\` escape
-    of its own, but the parity check stays correct either way). An odd-length
-    run means the last backslash pairs with this final quote instead,
-    escaping it, so it isn't a closing delimiter at all and the value was
-    never actually terminated -- exactly like the unquoted-value case
-    (`title: He said "no"`, see test_unquoted_value_ending_in_a_literal_
-    quote_mark_is_not_mangled), the safest thing to do is leave the raw
-    text -- quotes, backslashes, and all -- untouched, rather than silently
-    "closing" a quote the author never actually closed.
+    A closing quote is only "real" if it isn't itself escaped -- i.e. no
+    backslash sits immediately before it at all. This is not the usual
+    even/odd backslash-run parity check a language with its own `\\`
+    (escaped-backslash) sequence would need, where consecutive backslashes
+    pair off two at a time and only a lone, unpaired backslash left over
+    actually reaches the following character. This parser has no such
+    `\\` escape -- `value.replace('\\"', '"')` below, its only unescaping
+    step, recognizes exactly one two-character sequence, `\"`, and nothing
+    else -- so backslashes never pair off *with each other*: scanning
+    left to right, every backslash immediately followed by a quote
+    escapes that quote, full stop, regardless of how many more backslashes
+    sit before it. A run of any length 1, 2, 3, ... immediately before the
+    closing quote therefore always ends the same way -- its very last
+    backslash paired with this quote, escaping it -- while every earlier
+    backslash in that run is simply its own, separate literal character
+    that never touches the quote at all.
+    A prior version of this check used the even/odd parity rule anyway (0
+    backslashes real, 1 escaped, 2 real, 3 escaped, ...), reasoning it
+    "stays correct either way" -- true only for the parser this project
+    doesn't have. For an even run of two or more (e.g. `title: "ab\\\\"`,
+    two literal backslashes run right up against the closing quote) that
+    parity rule called the value cleanly closed and stripped the outer
+    quotes, producing the title `ab\\\\` (both backslashes, no quotes) --
+    but by this parser's own actual escaping rule above, that final quote
+    is still escaped by the backslash directly before it (exactly like the
+    already-handled single-backslash case), so the value was never really
+    terminated at all. The safest thing to do is what the single-backslash
+    case already does and what an unquoted value ending in a literal quote
+    mark already does too (`title: He said "no"`, see
+    test_unquoted_value_ending_in_a_literal_quote_mark_is_not_mangled):
+    leave the raw text -- quotes, backslashes, and all -- untouched, rather
+    than silently "closing" a quote the author never actually closed.
     """
-    backslash_run = 0
-    idx = len(value) - 2
-    while idx >= 0 and value[idx] == "\\":
-        backslash_run += 1
-        idx -= 1
-    return backslash_run % 2 == 0
+    return value[-2] != "\\"
 
 
 # A trailing space or tab after the "---" delimiter itself (before the

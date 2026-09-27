@@ -1808,6 +1808,35 @@ class TestParsePost(unittest.TestCase):
             post = build_site.parse_post(path)
             self.assertEqual(post["title"], '"She said \\"stop\\"')
 
+    def test_quoted_value_ending_in_an_even_backslash_run_is_also_left_as_raw_text(self):
+        # The sibling gap the fix above (odd backslash run) left open at the
+        # opposite parity: _has_unescaped_closing_quote() used to decide a
+        # value was cleanly closed whenever the backslash run right before
+        # the final '"' had *even* length (0, 2, 4, ...), reasoning that
+        # backslashes pair off two at a time the way they would in a
+        # language with its own `\\` (escaped-backslash) sequence. This
+        # parser has no such escape -- `value.replace('\\"', '"')` below
+        # recognizes exactly one two-character sequence, `\"`, and nothing
+        # else -- so backslashes never pair off *with each other*: the very
+        # last backslash in any run of one or more always pairs with the
+        # quote right after it and escapes it, regardless of how many more
+        # backslashes sit before that. A value like `title: "ab\\"` (two
+        # literal backslashes run right up against the closing quote) is
+        # therefore just as unterminated as the single-backslash case above
+        # -- its final quote is still escaped -- but the even-parity check
+        # called it a clean close anyway and stripped the outer quotes,
+        # producing the title `ab\\\\` (both backslashes, no quotes, and no
+        # indication the value was ever malformed) instead of leaving the
+        # raw, unterminated text untouched.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "2026-01-01-even-backslash-run.md"
+            path.write_text(
+                '---\ntitle: "ab\\\\"\ndate: 2026-01-01\n---\nBody.\n',
+                encoding="utf-8",
+            )
+            post = build_site.parse_post(path)
+            self.assertEqual(post["title"], '"ab\\\\"')
+
     def test_control_character_in_title_and_body_is_stripped(self):
         # render_feed() strips characters XML 1.0 forbids (control bytes,
         # lone surrogates, U+FFFE/U+FFFF -- see _strip_invalid_xml_chars())
