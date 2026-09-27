@@ -40,7 +40,19 @@ get_line() {
 
 CHMOD_BUILD_DIR="$(get_line 'chmod 755 "$BUILD_DIR"')"
 CHMOD_POSTS="$(get_line 'chmod 755 "$BUILD_DIR/posts"')"
-FIND_CHMOD_FILES="$(get_line 'find "$BUILD_DIR" -type f -exec chmod 644 {} +')"
+# Not a get_line exact-line match like its siblings above: a later fix
+# (unrelated to file-mode drift) wrapped this bare command in
+# `if ! timeout "$SYNC_TIMEOUT_S" ...; then ... fi` for its own reasons,
+# so the line as a whole no longer matches verbatim. Extracting just the
+# inner command as a substring (still failing loudly, at the top level of
+# this script rather than inside a function-in-subshell, if it's ever
+# renamed or removed) tolerates that wrapper while still needing the exact
+# same command text this test actually runs and checks the mode of.
+FIND_CHMOD_FILES="$(grep -F -m1 -o 'timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +' "$DEPLOY_SH" || true)"
+if [ -z "$FIND_CHMOD_FILES" ]; then
+  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} + -- has it been renamed or removed?' >&2
+  exit 1
+fi
 RSYNC1="$(get_line 'run_synced sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
 RSYNC2="$(get_line 'run_synced sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
 RSYNC3="$(get_line "run_synced sudo rsync -a --delete-delay --exclude='/posts/' \"\$BUILD_DIR/\" \"\$LIVE_PUBLIC/\"")"

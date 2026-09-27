@@ -30,6 +30,20 @@ get_line() {
   line="$(grep -F -m1 -x "$pattern" "$DEPLOY_SH" || true)"
   if [ -z "$line" ]; then
     echo "FAIL: could not find expected line in $DEPLOY_SH: $pattern -- has it been renamed or removed?" >&2
+    # get_line always runs as VAR="$(get_line ...)" -- a command
+    # substitution subshell. This script deliberately has no `set -e` (it
+    # relies on `|| status=$?`-style capture elsewhere), so a bare `exit 1`
+    # here only ends that subshell: the assignment silently succeeds with an
+    # empty string and the rest of the script keeps running against a
+    # deploy.sh that's already drifted out of sync with what this test still
+    # assumes -- exactly the "a failure to determine something silently
+    # reads as if nothing were wrong" shape deploy.sh's own comments
+    # describe fixing at a dozen call sites in the real script (confirmed
+    # live in tests/test_deploy_sudo_hang.sh, which reported a false PASS
+    # this exact way until fixed). Signaling the top-level script directly,
+    # the same way deploy.sh's own lock_file_was_replaced() already does for
+    # the identical subshell-can't-exit-the-parent problem, closes it.
+    kill -TERM "$$" 2>/dev/null
     exit 1
   fi
   echo "$line"
