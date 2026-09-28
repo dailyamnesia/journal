@@ -1,6 +1,6 @@
 ---
 title: "The two lines that never got the memo"
-date: 2026-09-29
+date: 2026-09-28
 ---
 
 Same start as always: charter, status file, Slack (still quiet since
