@@ -46,21 +46,26 @@ get_line() {
 # than inside a function-in-subshell, if it's ever renamed or removed)
 # tolerates that wrapper while still needing the exact same command text
 # this test actually runs and checks the mode of.
-CHMOD_BUILD_DIR="$(grep -F -m1 -o 'timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR"' "$DEPLOY_SH" || true)"
+CHMOD_BUILD_DIR="$(grep -F -m1 -o 'timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR"' "$DEPLOY_SH" || true)"
 if [ -z "$CHMOD_BUILD_DIR" ]; then
-  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR" -- has it been renamed or removed?' >&2
+  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR" -- has it been renamed or removed?' >&2
   exit 1
 fi
-CHMOD_POSTS="$(grep -F -m1 -o 'timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts"' "$DEPLOY_SH" || true)"
+CHMOD_POSTS="$(grep -F -m1 -o 'timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts"' "$DEPLOY_SH" || true)"
 if [ -z "$CHMOD_POSTS" ]; then
-  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts" -- has it been renamed or removed?' >&2
+  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts" -- has it been renamed or removed?' >&2
   exit 1
 fi
-FIND_CHMOD_FILES="$(grep -F -m1 -o 'timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +' "$DEPLOY_SH" || true)"
+FIND_CHMOD_FILES="$(grep -F -m1 -o 'timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +' "$DEPLOY_SH" || true)"
 if [ -z "$FIND_CHMOD_FILES" ]; then
-  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} + -- has it been renamed or removed?' >&2
+  echo 'FAIL: could not find expected command in '"$DEPLOY_SH"': timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} + -- has it been renamed or removed?' >&2
   exit 1
 fi
+# All three commands above now also carry `--kill-after="$TIMEOUT_KILL_AFTER_S"`
+# (the fix for `timeout` alone not actually bounding a SIGTERM-surviving
+# child), so this scratch harness -- run under `set -euo pipefail` -- needs
+# it defined too, the same way SYNC_TIMEOUT_LINE already is.
+KILL_AFTER_LINE="$(get_line 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"')"
 RSYNC1="$(get_line 'run_synced sudo rsync -a --ignore-existing "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
 RSYNC2="$(get_line 'run_synced sudo rsync -a "$BUILD_DIR/posts/" "$LIVE_PUBLIC/posts/"')"
 RSYNC3="$(get_line "run_synced sudo rsync -a --delete-delay --exclude='/posts/' \"\$BUILD_DIR/\" \"\$LIVE_PUBLIC/\"")"
@@ -107,6 +112,7 @@ export PATH="$WORK/bin:$PATH"
 )
 
 eval "$SYNC_TIMEOUT_LINE"
+eval "$KILL_AFTER_LINE"
 eval "$RUN_SYNCED_SRC"
 eval "$CHMOD_BUILD_DIR"
 eval "$CHMOD_POSTS"

@@ -65,6 +65,10 @@ export PATH="$WORK/bin:$PATH"
 # test_deploy_sudo_hang.sh) -- set here the same way the real deploy.sh
 # sets it from $DEPLOY_SH_SYNC_TIMEOUT_S before this block ever runs.
 SYNC_TIMEOUT_S=60
+# Same reasoning for $TIMEOUT_KILL_AFTER_S (the fix for `timeout` alone not
+# actually bounding a SIGTERM-surviving child), also referenced by every
+# `timeout` call in the extracted block now.
+TIMEOUT_KILL_AFTER_S=10
 
 BUILD_SRC="$WORK/build_src"
 mkdir -p "$BUILD_SRC/tools"

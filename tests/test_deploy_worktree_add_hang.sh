@@ -63,6 +63,13 @@ sleep 999999
 EOF
 chmod +x "$SCRATCH_REPO/.git/hooks/post-checkout"
 
+# The extracted block now wraps its `git worktree add` call in
+# `timeout --kill-after="$TIMEOUT_KILL_AFTER_S"` (the fix for `timeout` alone
+# not actually bounding a SIGTERM-surviving child) -- set here the same way
+# the real deploy.sh sets it from $DEPLOY_SH_TIMEOUT_KILL_AFTER_S before this
+# block ever runs.
+TIMEOUT_KILL_AFTER_S=10
+
 fail=0
 
 # Case 1: the bug -- a hanging post-checkout hook must not hang the block

@@ -40,6 +40,19 @@ if [ -z "$BLOCK_SRC" ]; then
   echo "FAIL: could not find the 'for path in / /feed.xml; do ... done' verification block in $DEPLOY_SH -- has it been renamed, restructured, or removed?" >&2
   exit 1
 fi
+# The block's own 'systemctl status' call now also carries
+# `--kill-after="$TIMEOUT_KILL_AFTER_S"` (the fix for `timeout` alone not
+# actually bounding a SIGTERM-surviving child). Left undefined, `timeout`
+# would see an empty `--kill-after=` and error out immediately (exit 125,
+# before ever invoking the stand-in systemctl at all) instead of genuinely
+# exercising the hang path this test exists to check -- a false PASS for
+# the wrong reason. Defined here and prepended below, same as deploy.sh's
+# own default.
+KILL_AFTER_LINE="$(grep -F -m1 -x 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"' "$DEPLOY_SH")"
+if [ -z "$KILL_AFTER_LINE" ]; then
+  echo "FAIL: could not find TIMEOUT_KILL_AFTER_S default line in $DEPLOY_SH -- has it been renamed or removed?" >&2
+  exit 1
+fi
 
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
@@ -89,7 +102,8 @@ start=$(date +%s)
 # reliably fires here since ~40s < 70s; post-fix, the block finishes on its
 # own in ~40-41s (measured directly, several runs), comfortably under the
 # 55s "did it hang" threshold below and the 70s outer bound.
-output="$(timeout 70 bash -c "$BLOCK_SRC" 2>&1)"
+output="$(timeout 70 bash -c "$KILL_AFTER_LINE
+$BLOCK_SRC" 2>&1)"
 status=$?
 elapsed=$(( $(date +%s) - start ))
 

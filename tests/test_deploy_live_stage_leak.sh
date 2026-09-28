@@ -70,6 +70,12 @@ if [ -z "$RUN_SYNCED_SRC" ]; then
   exit 1
 fi
 SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
+# RUN_SYNCED_SRC/CLEANUP_SRC's own timeout calls now also carry
+# `--kill-after="$TIMEOUT_KILL_AFTER_S"` (the fix for `timeout` alone not
+# actually bounding a SIGTERM-surviving child), so this scratch harness --
+# run under `set -u` -- needs it defined too, the same way SYNC_TIMEOUT_LINE
+# already is.
+KILL_AFTER_LINE="$(get_line 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"')"
 
 WORK="$(mktemp -d)"
 cleanup_work() { rm -rf "$WORK"; }
@@ -113,6 +119,7 @@ LIVE_SERVER="$WORK/live/server.js"
 LIVE_STAGE=""
 DIFF_STDERR=""
 $SYNC_TIMEOUT_LINE
+$KILL_AFTER_LINE
 $RUN_SYNCED_SRC
 $CLEANUP_SRC
 trap cleanup EXIT

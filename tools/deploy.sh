@@ -95,9 +95,52 @@ LOCKFILE=/tmp/dailyamnesia-deploy.lock
 # on PATH hanging only for "-o comm=": hung indefinitely unwrapped, failed
 # cleanly after the bound once wrapped. 30s matches the bound already used
 # for the sibling `ps -o user=` ownership lookup below.
+#
+# Every `timeout N cmd` call in this file -- there are roughly thirty of
+# them, starting with the `ps` call two lines down -- was written on the
+# assumption that `timeout` itself bounds how long this script can block.
+# It doesn't, not fully: GNU `timeout` without `--kill-after` sends exactly
+# one SIGTERM at the deadline and then calls its own blocking wait() on the
+# child. If the child doesn't actually die from that SIGTERM -- because it
+# traps or masks the signal, or because it's stuck in the exact
+# uninterruptible D-state syscall this file's own comments already cite as
+# the realistic cause of a "wedged NFS/FUSE mount" or a "PAM module blocked
+# on an unresponsive directory service" -- `timeout` keeps waiting past its
+# own deadline for exactly as long as the raw, unwrapped call would have;
+# the configured bound never fires. Every hang reproduced elsewhere in this
+# file's own comments used a stand-in that dies immediately on a plain,
+# untrapped SIGTERM (a bare `sleep 999999` or `while true`), which is
+# exactly the one case `timeout` alone already handles correctly -- so none
+# of those reproductions ever actually exercised this gap. Reproduced
+# directly: `timeout 2 bash -c "trap '' TERM; sleep 8"` took the full 8s,
+# not 2s, confirming `timeout` alone does not bound a SIGTERM-surviving
+# child; the identical call with `--kill-after=1` added returned in 3s (the
+# 2s deadline plus the 1s grace) instead, via SIGKILL, which a merely
+# TERM-trapping process -- unlike a genuinely wedged one -- cannot survive.
+# This is exactly the distinction cleanup() already draws for its own
+# blocking children (see its "escalating to SIGKILL" comment further down),
+# just never carried from that one call site to any of this file's other
+# `timeout` invocations, each of which still assumed a bare `timeout N` was
+# enough on its own.
+#
+# `--kill-after` doesn't close every case: a process genuinely stuck in
+# uninterruptible D-state I/O can't be freed by SIGKILL any more than by
+# SIGTERM, until the underlying syscall itself returns -- cleanup()'s own
+# comment already says as much, and nothing here changes that; a hang of
+# that specific, kernel-level kind is still open, same as cleanup() already
+# accepts for its own children. What this closes is the more ordinary case
+# this file's own scenarios describe just as often: a process that catches
+# or masks the signal instead of never receiving a deliverable one at all
+# (a PAM module mid-callback, a subprocess a git hook spawns, sudo's own
+# signal handling during some operations) -- previously indistinguishable
+# from "worked" by this script, and now bounded the same way cleanup()'s
+# own children already are. A short, fixed grace independent of each call
+# site's own primary bound: a backstop that should just barely matter, not
+# the mechanism this file leans on to actually detect a hang.
+TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"
 parent_is_flock() {
   local comm
-  if ! comm="$(timeout 30 ps -o comm= -p "$PPID" 2>/dev/null)"; then
+  if ! comm="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 ps -o comm= -p "$PPID" 2>/dev/null)"; then
     echo "FAILED: could not determine this process's own parent command via ps (ps failed or did not finish within 30s) -- refusing to guess whether the DAILYAMNESIA_DEPLOY_LOCKED sentinel is trustworthy (this would otherwise silently read as 'parent is not flock' and could either run unlocked or falsely reject a legitimate deploy as 'another deploy.sh is already running')." >&2
     exit 1
   fi
@@ -190,7 +233,7 @@ echo "== checking git state =="
 # external `timeout`, since the line itself had no protection of its own).
 # 60s matches the bound already used for `git fetch` just below, for the
 # same class of call.
-if ! GIT_STATUS_OUTPUT="$(timeout 60 git status --porcelain)"; then
+if ! GIT_STATUS_OUTPUT="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 60 git status --porcelain)"; then
   echo "FAILED: could not determine git working tree status (git status --porcelain failed or did not finish within 60s) -- refusing to guess whether the tree is clean." >&2
   exit 1
 fi
@@ -215,7 +258,7 @@ fi
 # since the command had no protection of its own). 60s is generous headroom
 # over a real fetch against a healthy remote, which completes in well under
 # a second.
-if ! timeout 60 git fetch origin main --quiet; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 60 git fetch origin main --quiet; then
   echo "FAILED: git fetch origin main did not finish within 60s (or failed) -- a hung or unresponsive remote would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -231,11 +274,11 @@ fi
 # `status`/`rev-parse`): both lines hung indefinitely, confirmed only by an
 # external `timeout`. Guarded assignment + `timeout 60`, the same shape and
 # bound as the fix just above, closes it for both.
-if ! LOCAL_REV="$(timeout 60 git rev-parse HEAD)"; then
+if ! LOCAL_REV="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 60 git rev-parse HEAD)"; then
   echo "FAILED: git rev-parse HEAD did not finish within 60s (or failed) -- a hung or wedged local git subprocess would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
-if ! REMOTE_REV="$(timeout 60 git rev-parse origin/main)"; then
+if ! REMOTE_REV="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 60 git rev-parse origin/main)"; then
   echo "FAILED: git rev-parse origin/main did not finish within 60s (or failed) -- a hung or wedged local git subprocess would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -296,7 +339,7 @@ fi
 # command substitution in this file already is, failed loudly within the
 # bound instead. $SYNC_TIMEOUT_S is already defined above (before this line)
 # for exactly this kind of shared use.
-if ! BUILD_SRC="$(timeout "$SYNC_TIMEOUT_S" mktemp -d)"; then
+if ! BUILD_SRC="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" mktemp -d)"; then
   echo "FAILED: could not create a temp directory for the build-source worktree (mktemp -d failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -474,7 +517,7 @@ cleanup() {
   # fires on a `timeout`-forced failure the same way it already did on an
   # ordinary one. Re-running the identical repro with this fix in place
   # returned within the timeout bound, via the fallback, instead of hanging.
-  timeout "$SYNC_TIMEOUT_S" git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
+  timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" git worktree remove --force --force "$BUILD_SRC" 2>/dev/null || rm -rf "$BUILD_SRC"
   # This was the one remaining call in cleanup() left both unwrapped by
   # `timeout` and without an `|| true` fallback -- missed by session 250's
   # own pass right above it. Unlike its two immediate neighbors -- `git
@@ -497,7 +540,7 @@ cleanup() {
   # added here, matching the treatment every other line in this function
   # already has, preserved the real exit code and ran both remaining
   # cleanups.
-  timeout "$SYNC_TIMEOUT_S" rm -rf "$BUILD_DIR" 2>/dev/null || true
+  timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" rm -rf "$BUILD_DIR" 2>/dev/null || true
   # $LIVE_STAGE (see the server.js swap below) is root-owned, created via
   # sudo, and outside $BUILD_SRC/$BUILD_DIR entirely -- unlike every other
   # temp path this cleanup already handles, nothing else ever removes it.
@@ -538,7 +581,7 @@ cleanup() {
   # way a missing $LIVE_STAGE already made this whole line a no-op. Re-
   # running the identical repro with this fix in place returned within the
   # timeout bound instead of hanging.
-  [ -n "$LIVE_STAGE" ] && { timeout "$SYNC_TIMEOUT_S" sudo rm -f "$LIVE_STAGE" 2>/dev/null || true; }
+  [ -n "$LIVE_STAGE" ] && { timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo rm -f "$LIVE_STAGE" 2>/dev/null || true; }
   # $DIFF_STDERR (see the server.js diff/ambiguity check below) is an
   # unprivileged plain-`mktemp` file, unlike $LIVE_STAGE above -- no `sudo`
   # and no `timeout` needed to remove it, since a local unprivileged `rm -f`
@@ -583,7 +626,7 @@ trap cleanup EXIT
 # timeout, so a regression test can exercise the timeout path itself in
 # bounded time instead of waiting out the real 60s default.
 WORKTREE_ADD_TIMEOUT_S="${DEPLOY_SH_WORKTREE_ADD_TIMEOUT_S:-60}"
-if ! timeout "$WORKTREE_ADD_TIMEOUT_S" git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$WORKTREE_ADD_TIMEOUT_S" git worktree add --quiet --detach "$BUILD_SRC" "$LOCAL_REV"; then
   echo "FAILED: git worktree add --detach $BUILD_SRC $LOCAL_REV did not finish within ${WORKTREE_ADD_TIMEOUT_S}s (or failed) -- a hung post-checkout hook (or other slow/stuck checkout step) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -611,7 +654,7 @@ echo "== running python tests =="
 # never returns on its own (confirmed via an external `timeout`, not this
 # script's own protection, since it had none). 300s is generous headroom
 # over the real suite's ~65s.
-if ! timeout 300 python3 -m unittest discover -s "$BUILD_SRC/tests"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 300 python3 -m unittest discover -s "$BUILD_SRC/tests"; then
   echo "FAILED: python test suite did not finish within 300s (or failed) -- a hung test would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -676,7 +719,7 @@ fi
 # with no idle moment for that self-healing to ever run. Reproduced directly:
 # a scratch `while (true) {}` test run through this exact command never
 # returns on its own. 300s is generous headroom over the real suite's ~20s.
-if ! timeout 300 node --test "$NODE_TEST_FILE"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 300 node --test "$NODE_TEST_FILE"; then
   echo "FAILED: node test suite did not finish within 300s (or failed) -- a hung test would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -688,7 +731,7 @@ fi
 # exact line unmodified, hung indefinitely under an external `timeout`;
 # wrapping it in `timeout "$SYNC_TIMEOUT_S"` and guarding the assignment
 # failed loudly within the bound instead.
-if ! BUILD_DIR="$(timeout "$SYNC_TIMEOUT_S" mktemp -d)"; then
+if ! BUILD_DIR="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" mktemp -d)"; then
   echo "FAILED: could not create a temp directory for the build output (mktemp -d failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -726,7 +769,7 @@ fi
 # the identical repro with this chmod in place left $LIVE_PUBLIC at 0755
 # throughout, whether the destination started already-correct or already
 # drifted to 0700.
-if ! timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR"; then
   echo "FAILED: could not set $BUILD_DIR to mode 755 (chmod failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -754,7 +797,7 @@ echo "== building site =="
 # for _first_commit_time()'s own noted cost growing with the repo's post
 # count and commit history.
 BUILD_TIMEOUT_S="${DEPLOY_SH_BUILD_TIMEOUT_S:-300}"
-if ! timeout "$BUILD_TIMEOUT_S" python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$BUILD_TIMEOUT_S" python3 "$BUILD_SRC/tools/build_site.py" "$BUILD_DIR"; then
   echo "FAILED: building the site did not finish within ${BUILD_TIMEOUT_S}s (or failed) -- a hung git subprocess (git log --follow, called once per post by build_site.py) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -783,7 +826,7 @@ fi
 # left it at 0700 afterward even with the $BUILD_DIR chmod above already in
 # place. chmod-ing $BUILD_DIR/posts here, right after build_site.py creates
 # it, closes the same gap the same way.
-if ! timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts"; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts"; then
   echo "FAILED: could not set $BUILD_DIR/posts to mode 755 (chmod failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
 fi
@@ -823,7 +866,7 @@ fi
 # unwrapped, a wedged filesystem here hung the whole deploy indefinitely,
 # still holding $LOCKFILE, with no FAILED message -- confirmed directly via a
 # stand-in `find` on PATH that hangs only for this exact invocation shape.
-if ! timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +; then
+if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" find "$BUILD_DIR" -type f -exec chmod 644 {} +; then
   echo "FAILED: could not normalize file modes under $BUILD_DIR (find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
   exit 1
 fi
@@ -849,7 +892,7 @@ fi
 # FAILED message. Reproduced with a stand-in `find` on PATH that hangs only
 # for this exact invocation shape; timeout closes it the same way it already
 # does for OLD_POST_COUNT.
-if ! NEW_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
+if ! NEW_POST_COUNT="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" find "$BUILD_DIR/posts" -name '*.html' | wc -l)"; then
   echo "FAILED: could not count post pages in the new build ($BUILD_DIR/posts) (find failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
   exit 1
 fi
@@ -924,7 +967,7 @@ fi
 # real denied/no-TTY sudo (the two legitimate outcomes this check already
 # handles) both still reached the same result as before, unaffected.
 sudo_health_status=0
-timeout "$SYNC_TIMEOUT_S" sudo -n true 2>/dev/null || sudo_health_status=$?
+timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo -n true 2>/dev/null || sudo_health_status=$?
 if [ "$sudo_health_status" -eq 124 ]; then
   echo "FAILED: 'sudo -n true' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call (e.g. a sudoers group rule or PAM module blocked on an unresponsive directory service) would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
@@ -1027,7 +1070,7 @@ fi
 # prefix), so it isn't fooled by that second link.
 OLD_POST_COUNT=0
 index_status=0
-INDEX_TEST_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_PUBLIC/index.html" 2>&1 >/dev/null)" || index_status=$?
+INDEX_TEST_STDERR="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_PUBLIC/index.html" 2>&1 >/dev/null)" || index_status=$?
 if [ "$index_status" -eq 124 ]; then
   echo "FAILED: 'sudo test -e $LIVE_PUBLIC/index.html' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
@@ -1035,7 +1078,7 @@ elif [ "$index_status" -ne 0 ] && [ -n "$INDEX_TEST_STDERR" ]; then
   echo "FAILED: could not reliably determine whether $LIVE_PUBLIC/index.html exists (sudo test -e exited $index_status with unexpected stderr: $INDEX_TEST_STDERR) -- refusing to guess whether posts are currently live rather than risk a broken build silently wiping them out via rsync --delete-delay." >&2
   exit 1
 elif [ "$index_status" -eq 0 ]; then
-  OLD_POST_COUNT="$(timeout "$SYNC_TIMEOUT_S" sudo grep -c '<li><a href="posts/' "$LIVE_PUBLIC/index.html" || true)"
+  OLD_POST_COUNT="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo grep -c '<li><a href="posts/' "$LIVE_PUBLIC/index.html" || true)"
   if ! [[ "$OLD_POST_COUNT" =~ ^[0-9]+$ ]]; then
     echo "FAILED: could not count posts linked from $LIVE_PUBLIC/index.html (sudo grep failed or did not finish within ${SYNC_TIMEOUT_S}s)." >&2
     exit 1
@@ -1094,7 +1137,7 @@ fi
 # on PATH hanging only for "-o ppid=": hung indefinitely unwrapped, failed
 # cleanly after the bound once wrapped. 30s matches the bound already used
 # for the sibling `ps -o comm=`/`ps -o user=` lookups elsewhere in this file.
-if ! SUPERVISOR_PPID="$(timeout 30 ps -o ppid= -p $$ | tr -d ' ')"; then
+if ! SUPERVISOR_PPID="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 ps -o ppid= -p $$ | tr -d ' ')"; then
   echo "FAILED: could not determine this deploy's own parent process id via ps (ps failed or did not finish within 30s) -- refusing to guess whether the lock-holding supervisor is still alive rather than risk syncing unprotected." >&2
   exit 1
 fi
@@ -1321,7 +1364,7 @@ watch_supervisor &
 # OLD_POST_COUNT guard's own two sudo calls can share this exact bound too
 # -- see that call site's comment.)
 run_synced() {
-  if ! timeout "$SYNC_TIMEOUT_S" "$@"; then
+  if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" "$@"; then
     echo "FAILED: '$*' did not finish within ${SYNC_TIMEOUT_S}s (or failed) -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
     exit 1
   fi
@@ -1476,7 +1519,7 @@ restart_service() {
   # bounded time (a fake hung systemctl plus a short override) without
   # waiting out the real 200s default or patching this file to test it.
   local restart_timeout="${DEPLOY_SH_SYSTEMCTL_RESTART_TIMEOUT_S:-200}"
-  if ! timeout "$restart_timeout" sudo systemctl restart dailyamnesia-web.service; then
+  if ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$restart_timeout" sudo systemctl restart dailyamnesia-web.service; then
     echo "FAILED: systemctl restart did not finish within ${restart_timeout}s (or failed) -- a hung systemd/D-Bus manager would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
     echo "$RECOVERY_HINT" >&2
     return 1
@@ -1614,7 +1657,7 @@ test_status=0
 # blanket "any nonzero means FAILED" would misread a real first deploy
 # (server.js not live yet) as a hang. `timeout`'s own exit 124 is checked
 # for explicitly instead, the one outcome that's unambiguously a hang.
-TEST_EXISTS_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" 2>&1 >/dev/null)" || test_status=$?
+TEST_EXISTS_STDERR="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" 2>&1 >/dev/null)" || test_status=$?
 if [ "$test_status" -eq 124 ]; then
   echo "FAILED: 'sudo test -e $LIVE_SERVER' did not finish within ${SYNC_TIMEOUT_S}s -- a hung sudo call would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
   exit 1
@@ -1634,11 +1677,11 @@ else
   # hung indefinitely under an external `timeout`; wrapping it in
   # `timeout "$SYNC_TIMEOUT_S"` and guarding the assignment failed loudly
   # within the bound instead.
-  if ! DIFF_STDERR="$(timeout "$SYNC_TIMEOUT_S" mktemp)"; then
+  if ! DIFF_STDERR="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" mktemp)"; then
     echo "FAILED: could not create a temp file to capture 'sudo diff' stderr (mktemp failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
     exit 1
   fi
-  timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
+  timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?
   DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"
   rm -f "$DIFF_STDERR"
   DIFF_STDERR=""
@@ -1751,7 +1794,7 @@ fi
 # (the `!` already in front of it): the safe direction here is to attempt a
 # restart, not to silently proceed as if the service were healthy. 30s is
 # generous for a query that normally completes in milliseconds.
-if [ "$SERVER_CHANGED" = true ] || ! timeout 30 sudo systemctl is-active --quiet dailyamnesia-web.service; then
+if [ "$SERVER_CHANGED" = true ] || ! timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 sudo systemctl is-active --quiet dailyamnesia-web.service; then
   echo "== (re)starting service =="
   restart_service || exit 1
 else
@@ -1796,7 +1839,7 @@ for path in / /feed.xml; do
     # external `timeout`, since the line itself had no protection). Wrapping
     # it in `timeout 30`, the same bound already used for the sibling
     # `is-active`/`show` diagnostic calls, closes it the same way.
-    timeout 30 systemctl status dailyamnesia-web.service --no-pager -l >&2 || true
+    timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 systemctl status dailyamnesia-web.service --no-pager -l >&2 || true
     echo "$RECOVERY_HINT" >&2
     exit 1
   fi
@@ -1860,7 +1903,7 @@ POST_VERIFY_SANITY_FAILED=2
 # unwrapped systemctl call site. Left unwrapped, that would hang this
 # deploy indefinitely at the very last step, still holding $LOCKFILE, even
 # though the site itself is already live and verified.
-if ! pid="$(timeout 30 systemctl show -p MainPID --value dailyamnesia-web.service)"; then
+if ! pid="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 systemctl show -p MainPID --value dailyamnesia-web.service)"; then
   echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not query dailyamnesia-web.service's MainPID via systemctl afterward (it may have timed out), so its ownership couldn't be checked. Investigate directly; no further action is needed to ship this deploy." >&2
   exit "$POST_VERIFY_SANITY_FAILED"
 fi
@@ -1888,7 +1931,7 @@ fi
 # indefinitely unwrapped, failed cleanly after the bound once wrapped. 30s
 # matches the bound already used for the sibling `is-active`/`show`
 # diagnostic calls in this same section.
-if ! owner="$(timeout 30 ps -o user= -p "$pid" | tr -d ' ')"; then
+if ! owner="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" 30 ps -o user= -p "$pid" | tr -d ' ')"; then
   echo "FAILED: deploy succeeded and the new content is verified live (both / and /feed.xml returned 200) — but could not determine the owning user of server.js process (pid $pid) afterward (ps failed or did not finish within 30s); it may have already exited. Investigate directly; no further action is needed to ship this deploy." >&2
   exit "$POST_VERIFY_SANITY_FAILED"
 fi

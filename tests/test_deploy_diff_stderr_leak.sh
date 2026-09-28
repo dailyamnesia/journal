@@ -60,10 +60,14 @@ if [ -z "$MKTEMP_LINE" ]; then
   echo "FAIL: could not find the 'if ! DIFF_STDERR=...mktemp...fi' block in $DEPLOY_SH -- has it been renamed, restructured, or removed?" >&2
   exit 1
 fi
-DIFF_LINE="$(get_line '  timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?')"
+DIFF_LINE="$(get_line '  timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?')"
 CONTENT_LINE="$(get_line '  DIFF_STDERR_CONTENT="$(cat "$DIFF_STDERR")"')"
 RM_LINE="$(get_line '  rm -f "$DIFF_STDERR"')"
 SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
+# DIFF_LINE now references $TIMEOUT_KILL_AFTER_S (the --kill-after fix), so
+# this scratch harness -- run under `set -u` -- needs it defined too, the
+# same way SYNC_TIMEOUT_LINE already is.
+KILL_AFTER_LINE="$(get_line 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"')"
 
 WORK="$(mktemp -d)"
 cleanup_work() { rm -rf "$WORK"; }
@@ -94,6 +98,7 @@ LIVE_STAGE=""
 DIFF_STDERR=""
 diff_status=0
 $SYNC_TIMEOUT_LINE
+$KILL_AFTER_LINE
 $CLEANUP_SRC
 trap cleanup EXIT
 EOF

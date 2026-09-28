@@ -65,13 +65,19 @@ if [ -z "$CLEANUP_SRC" ]; then
   exit 1
 fi
 case "$CLEANUP_SRC" in
-  *'timeout "$SYNC_TIMEOUT_S" git worktree remove'*) ;;
+  *'timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" git worktree remove'*) ;;
   *)
-    echo "FAIL: cleanup() no longer wraps 'git worktree remove' in timeout \"\$SYNC_TIMEOUT_S\" -- has the fix been reverted or the line restructured?" >&2
+    echo "FAIL: cleanup() no longer wraps 'git worktree remove' in timeout --kill-after=\"\$TIMEOUT_KILL_AFTER_S\" \"\$SYNC_TIMEOUT_S\" -- has the fix been reverted or the line restructured?" >&2
     exit 1
     ;;
 esac
 SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
+# CLEANUP_SRC's own timeout calls now also carry
+# `--kill-after="$TIMEOUT_KILL_AFTER_S"` (the fix for `timeout` alone not
+# actually bounding a SIGTERM-surviving child), so this scratch harness --
+# run under `set -u` -- needs it defined too, the same way SYNC_TIMEOUT_LINE
+# already is.
+KILL_AFTER_LINE="$(get_line 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"')"
 
 WORK="$(mktemp -d)"
 cleanup_work() { rm -rf "$WORK"; }
@@ -106,6 +112,7 @@ BUILD_DIR="$WORK/build_dir_unused"
 LIVE_STAGE=""
 DIFF_STDERR=""
 $SYNC_TIMEOUT_LINE
+$KILL_AFTER_LINE
 $CLEANUP_SRC
 trap cleanup EXIT
 exit 1

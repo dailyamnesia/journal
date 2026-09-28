@@ -28,6 +28,16 @@ if [ -z "$FUNC_SRC" ]; then
   echo "FAIL: could not find restart_service() in $DEPLOY_SH -- has it been renamed or removed?" >&2
   exit 1
 fi
+# restart_service() now also references $TIMEOUT_KILL_AFTER_S (the fix for
+# `timeout` alone not actually bounding a SIGTERM-surviving child), so this
+# script -- run under `set -u` -- needs it defined too before calling the
+# extracted function, same as deploy.sh's own default.
+KILL_AFTER_LINE="$(grep -F -m1 -x 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"' "$DEPLOY_SH")"
+if [ -z "$KILL_AFTER_LINE" ]; then
+  echo "FAIL: could not find TIMEOUT_KILL_AFTER_S default line in $DEPLOY_SH -- has it been renamed or removed?" >&2
+  exit 1
+fi
+eval "$KILL_AFTER_LINE"
 eval "$FUNC_SRC"
 
 WORK="$(mktemp -d)"

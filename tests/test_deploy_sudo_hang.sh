@@ -57,9 +57,15 @@ if [ -z "$RUN_SYNCED_SRC" ]; then
   exit 1
 fi
 SYNC_TIMEOUT_LINE="$(get_line 'SYNC_TIMEOUT_S="${DEPLOY_SH_SYNC_TIMEOUT_S:-60}"')"
+# Every timeout call below (including inside run_synced()) now also carries
+# `--kill-after="$TIMEOUT_KILL_AFTER_S"` (the fix for `timeout` alone not
+# actually bounding a SIGTERM-surviving child), so this scratch harness --
+# run under `set -u` -- needs it defined too, the same way SYNC_TIMEOUT_LINE
+# already is.
+KILL_AFTER_LINE="$(get_line 'TIMEOUT_KILL_AFTER_S="${DEPLOY_SH_TIMEOUT_KILL_AFTER_S:-10}"')"
 MKDIR_LINE="$(get_line 'run_synced sudo mkdir -p "$LIVE_PUBLIC/posts"')"
-TEST_LINE="$(get_line 'TEST_EXISTS_STDERR="$(timeout "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" 2>&1 >/dev/null)" || test_status=$?')"
-DIFF_LINE="$(get_line '  timeout "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?')"
+TEST_LINE="$(get_line 'TEST_EXISTS_STDERR="$(timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo test -e "$LIVE_SERVER" 2>&1 >/dev/null)" || test_status=$?')"
+DIFF_LINE="$(get_line '  timeout --kill-after="$TIMEOUT_KILL_AFTER_S" "$SYNC_TIMEOUT_S" sudo diff -q "$BUILD_SRC/tools/server.js" "$LIVE_SERVER" >/dev/null 2>"$DIFF_STDERR" || diff_status=$?')"
 
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
@@ -92,7 +98,7 @@ fail=0
 # wrapper).
 start=$(date +%s)
 status=0
-output="$(bash -c "$SYNC_TIMEOUT_LINE; $RUN_SYNCED_SRC; $MKDIR_LINE" 2>&1)" || status=$?
+output="$(bash -c "$SYNC_TIMEOUT_LINE; $KILL_AFTER_LINE; $RUN_SYNCED_SRC; $MKDIR_LINE" 2>&1)" || status=$?
 elapsed=$(( $(date +%s) - start ))
 if [ "$elapsed" -gt 10 ]; then
   echo "FAIL: run_synced sudo mkdir against a hung sudo took ${elapsed}s -- expected it to give up around the 2s override, not hang indefinitely." >&2
@@ -119,7 +125,7 @@ LIVE_SERVER="$WORK/live_server.js"
 : > "$LIVE_SERVER"
 start=$(date +%s)
 status=0
-output="$(bash -c "$SYNC_TIMEOUT_LINE; test_status=0; $TEST_LINE; if [ \"\$test_status\" -eq 124 ]; then echo 'FAILED: sudo test -e did not finish within \${SYNC_TIMEOUT_S}s'; exit 1; fi; echo unexpectedly-reached-past-the-hang" 2>&1)" || status=$?
+output="$(bash -c "$SYNC_TIMEOUT_LINE; $KILL_AFTER_LINE; test_status=0; $TEST_LINE; if [ \"\$test_status\" -eq 124 ]; then echo 'FAILED: sudo test -e did not finish within \${SYNC_TIMEOUT_S}s'; exit 1; fi; echo unexpectedly-reached-past-the-hang" 2>&1)" || status=$?
 elapsed=$(( $(date +%s) - start ))
 if [ "$elapsed" -gt 10 ]; then
   echo "FAIL: sudo test -e against a hung sudo took ${elapsed}s -- expected it to give up around the 2s override." >&2
