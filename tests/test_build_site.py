@@ -2620,6 +2620,76 @@ class TestBuildRemovesStalePostPages(unittest.TestCase):
         self.assertFalse(first_page_still_exists)
         self.assertTrue(second_page_still_exists)
 
+    def test_stale_page_survives_a_build_that_fails_on_a_later_post(self):
+        # The stale-page cleanup above (current_slugs / the `.glob("*.html")`
+        # sweep) used to run unconditionally *before* any post was actually
+        # rendered, deciding "current" purely from `parse_post()`'s output --
+        # which only reads frontmatter, never validates the body's markdown.
+        # A body-level defect (an unterminated code fence, a blank "## "
+        # heading -- see render_markdown()'s own ValueError cases) is only
+        # discovered later, inside the per-post render loop, one post at a
+        # time. So a source file that was legitimately renamed away lost its
+        # *old* output page to this cleanup sweep even on a build that went
+        # on to crash on a completely unrelated post's body -- deleting a
+        # previously-good, still-served page with nothing to replace it,
+        # since the loop never reaches writing the new pages (or
+        # regenerating index.html/feed.xml) once it raises. A single bad
+        # post's markdown could silently take an unrelated, perfectly fine
+        # post's page down with it. Running the stale-page sweep only after
+        # every post has actually rendered and been written -- so a mid-loop
+        # ValueError propagates before any cleanup happens at all -- closes
+        # the gap: a failed build now leaves the previous, still-good output
+        # untouched instead of a worse, partially-deleted one.
+        orig_posts_dir = build_site.POSTS_DIR
+        orig_static_dir = build_site.STATIC_DIR
+        orig_charter_path = build_site.CHARTER_PATH
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                posts_dir = d / "posts"
+                posts_dir.mkdir()
+                static_dir = d / "static"
+                static_dir.mkdir()
+                (static_dir / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+                (d / "CHARTER.md").write_text("# Charter\n\nA rule.\n", encoding="utf-8")
+
+                good = posts_dir / "2026-01-01-good.md"
+                good.write_text(
+                    '---\ntitle: "Good post"\ndate: 2026-01-01\n---\nHello, good post.\n',
+                    encoding="utf-8",
+                )
+
+                build_site.POSTS_DIR = posts_dir
+                build_site.STATIC_DIR = static_dir
+                build_site.CHARTER_PATH = d / "CHARTER.md"
+
+                out = d / "_site"
+                build_site.build(out)
+                good_page = out / "posts" / "2026-01-01-good.html"
+                self.assertTrue(good_page.exists())
+
+                # Rename the good post away (its old page should now be
+                # stale) and introduce a second post whose frontmatter parses
+                # fine but whose body fails markdown rendering -- only
+                # discovered mid-loop, after the stale sweep already ran
+                # pre-fix.
+                good.rename(posts_dir / "2026-01-01-renamed.md")
+                (posts_dir / "2026-01-02-broken.md").write_text(
+                    '---\ntitle: "Broken post"\ndate: 2026-01-02\n---\n## \n',
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(ValueError):
+                    build_site.build(out)
+
+                good_page_still_exists = good_page.exists()
+        finally:
+            build_site.POSTS_DIR = orig_posts_dir
+            build_site.STATIC_DIR = orig_static_dir
+            build_site.CHARTER_PATH = orig_charter_path
+
+        self.assertTrue(good_page_still_exists)
+
 
 class TestBuildLinksAdjacentPosts(unittest.TestCase):
     """Every post page should offer a way onward without a trip through the

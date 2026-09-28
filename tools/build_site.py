@@ -1651,26 +1651,6 @@ def build(out_dir):
     # order has no relationship to when a post was actually written.
     posts.sort(key=lambda p: (p["date"], _commit_sort_key(p["commit_time"])), reverse=True)
 
-    # index.html, feed.xml, charter.html, and 404.html are all rewritten in
-    # full below on every build, so they can never go stale. A post page is
-    # different: it's only ever added, never removed, so renaming or
-    # deleting a post's source file leaves its *old* output file sitting in
-    # out_dir/posts/ untouched by this build. That page is already unlinked
-    # from the index/feed the moment this build finishes, but it's still
-    # live on disk at its old URL, serving whatever it last rendered to,
-    # indefinitely -- deploy.sh's own rsync passes happen to sweep this up
-    # in production (`--delete-delay`), but that's a property of the deploy
-    # pipeline, not of this script, and the local workflow README.md
-    # documents (`python3 tools/build_site.py`, then open `_site/index.html`
-    # directly) rebuilds into the same output directory every time with no
-    # such cleanup. Removing every post page that no longer corresponds to
-    # a current source file keeps out_dir/posts/ an exact mirror of
-    # posts/*.md on every build, not just an ever-growing superset of it.
-    current_slugs = {post["slug"] for post in posts}
-    for stale in (out_dir / "posts").glob("*.html"):
-        if stale.stem not in current_slugs:
-            stale.unlink()
-
     for i, post in enumerate(posts):
         content = render_markdown(post["body"], source=f"posts/{post['slug']}.md")
         # posts is newest-first, so the next entry in the list is the older
@@ -1689,6 +1669,45 @@ def build(out_dir):
         (out_dir / "posts" / f"{post['slug']}.html").write_text(
             page(post["title"], body_html, description=_summary(post["body"])), encoding="utf-8"
         )
+
+    # index.html, feed.xml, charter.html, and 404.html are all rewritten in
+    # full below on every build, so they can never go stale. A post page is
+    # different: it's only ever added, never removed, so renaming or
+    # deleting a post's source file leaves its *old* output file sitting in
+    # out_dir/posts/ untouched by this build. That page is already unlinked
+    # from the index/feed the moment this build finishes, but it's still
+    # live on disk at its old URL, serving whatever it last rendered to,
+    # indefinitely -- deploy.sh's own rsync passes happen to sweep this up
+    # in production (`--delete-delay`), but that's a property of the deploy
+    # pipeline, not of this script, and the local workflow README.md
+    # documents (`python3 tools/build_site.py`, then open `_site/index.html`
+    # directly) rebuilds into the same output directory every time with no
+    # such cleanup. Removing every post page that no longer corresponds to
+    # a current source file keeps out_dir/posts/ an exact mirror of
+    # posts/*.md on every build, not just an ever-growing superset of it.
+    #
+    # This sweep deliberately runs *after* the per-post render/write loop
+    # above, not before it (which is where it used to sit, right after
+    # `posts` was parsed and sorted). `parse_post()` only reads frontmatter;
+    # it never validates a post's body, so a body-level defect (an
+    # unterminated code fence, a blank "## " heading -- see
+    # render_markdown()'s own ValueError cases) is only discovered mid-loop,
+    # one post at a time, and propagates out of build() uncaught. Computing
+    # `current_slugs` from `posts` and sweeping stale pages *before* that
+    # loop ran meant a source file legitimately renamed away lost its old,
+    # still-good output page to this cleanup on a build that went on to
+    # crash on a completely unrelated post's body -- deleting real content
+    # with nothing written to replace it, since the crash happened before
+    # index.html/feed.xml were ever regenerated too. A single bad post could
+    # silently take an unrelated, perfectly fine post's page down with it.
+    # Running the sweep only once every post has actually rendered and been
+    # written successfully means a mid-loop ValueError now leaves the
+    # previous, still-good output untouched instead of a worse, partially-
+    # deleted one.
+    current_slugs = {post["slug"] for post in posts}
+    for stale in (out_dir / "posts").glob("*.html"):
+        if stale.stem not in current_slugs:
+            stale.unlink()
 
     items = "\n".join(
         # slug goes into an href attribute, same as every other slug
