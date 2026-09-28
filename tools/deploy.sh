@@ -726,7 +726,10 @@ fi
 # the identical repro with this chmod in place left $LIVE_PUBLIC at 0755
 # throughout, whether the destination started already-correct or already
 # drifted to 0700.
-chmod 755 "$BUILD_DIR"
+if ! timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR"; then
+  echo "FAILED: could not set $BUILD_DIR to mode 755 (chmod failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 echo "== building site =="
 # build_site.py's _first_commit_time() shells out to `git log --follow`
@@ -780,7 +783,10 @@ fi
 # left it at 0700 afterward even with the $BUILD_DIR chmod above already in
 # place. chmod-ing $BUILD_DIR/posts here, right after build_site.py creates
 # it, closes the same gap the same way.
-chmod 755 "$BUILD_DIR/posts"
+if ! timeout "$SYNC_TIMEOUT_S" chmod 755 "$BUILD_DIR/posts"; then
+  echo "FAILED: could not set $BUILD_DIR/posts to mode 755 (chmod failed or did not finish within ${SYNC_TIMEOUT_S}s) -- a wedged TMPDIR filesystem would otherwise hold this deploy's lock forever, silently blocking every future deploy until killed by hand." >&2
+  exit 1
+fi
 
 # Same drift as the two chmods above, but for the individual files
 # build_site.py actually writes -- index.html, feed.xml, 404.html,
